@@ -7,6 +7,8 @@ from singer_sdk.authenticators import BearerTokenAuthenticator
 from singer_sdk.streams import RESTStream
 import singer
 from singer import StateMessage
+from tap_cbx1.auth import TapCBX1Auth
+
 _TToken = TypeVar("_TToken")
 
 class CBX1Stream(RESTStream):
@@ -22,12 +24,9 @@ class CBX1Stream(RESTStream):
     replication_key_field = "updatedAt"
 
     @property
-    def authenticator(self) -> BearerTokenAuthenticator:
+    def authenticator(self) -> TapCBX1Auth:
         """Return a new authenticator object."""
-        return BearerTokenAuthenticator.create_for_stream(
-            self,
-            token=self.config.get("access_token")
-        )
+        return TapCBX1Auth.create_for_stream(self)
 
     def get_next_page_token(
         self, response: requests.Response, previous_token: Optional[Any]

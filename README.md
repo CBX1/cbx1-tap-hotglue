@@ -5,12 +5,19 @@
 
 ```
 {
-    "access_token": "...",
+    "access_key": "...",
     "organization_id": "...",
     "user_id": "..."
-    ...
 }
 ```
+
+## Authentication
+
+This tap uses JWT authentication with CBX1's IDM. The tap will:
+
+1. Fetch a JWT token using the provided access_key and organization_id
+2. Use this JWT token for all API calls
+3. Monitor token expiration and automatically refresh when needed (typically ~30 days)
 
 ## Streams
 

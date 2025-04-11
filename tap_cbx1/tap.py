@@ -11,15 +11,21 @@ from tap_cbx1 import streams
 
 class TapCBX1(Tap):
     """CBX1 tap class."""
+    def __init__(
+            self,
+            config=None,
+            catalog=None,
+            state=None,
+            parse_env_config=False,
+            validate_config=True,
+        ) -> None:
+            self.config_file = config[0]
+            super().__init__(config, catalog, state, parse_env_config, validate_config)
 
     name = "tap-cbx1"
 
     config_jsonschema = th.PropertiesList(
-        th.Property(
-            "access_token",
-            th.StringType,
-            required=True,
-        ),
+        th.Property("access_key", th.StringType, required=True),
         th.Property("organization_id", th.StringType, required=True),
         th.Property("user_id", th.StringType, required=True)
     ).to_dict()
