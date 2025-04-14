@@ -1,11 +1,13 @@
 """TapCBX1 Authentication."""
 
 import json
+import os
+from typing import Optional
+
 import requests
 from singer_sdk.authenticators import OAuthAuthenticator, SingletonMeta
 from singer_sdk.helpers._util import utc_now
 from singer_sdk.streams import Stream as RESTStreamBase
-from typing import Optional
 
 from tap_cbx1.constants import ORG_ID_KEY, CODE_KEY
 
@@ -16,10 +18,10 @@ class TapCBX1Auth(OAuthAuthenticator, metaclass=SingletonMeta):
     """Authenticator class for TapCBX1."""
 
     def __init__(
-        self,
-        stream: RESTStreamBase,
-        auth_endpoint: Optional[str] = None,
-        oauth_scopes: Optional[str] = None
+            self,
+            stream: RESTStreamBase,
+            auth_endpoint: Optional[str] = None,
+            oauth_scopes: Optional[str] = None
     ) -> None:
         super().__init__(stream=stream, auth_endpoint=auth_endpoint, oauth_scopes=oauth_scopes)
         self._tap = stream._tap
@@ -37,9 +39,9 @@ class TapCBX1Auth(OAuthAuthenticator, metaclass=SingletonMeta):
     def create_for_stream(cls, stream) -> "TapCBX1Auth":
         return cls(
             stream=stream,
-            auth_endpoint="https://qa-api.cbx1.app/api/g/v1/auth/token/generate",
+            auth_endpoint=os.getenv("BASE_URL", default="https://qa-api.cbx1.app/") + "api/g/v1/auth/token/generate",
         )
-        
+
     def is_token_valid(self) -> bool:
         """Check if token is valid.
 
