@@ -7,6 +7,9 @@ from singer_sdk.helpers._util import utc_now
 from singer_sdk.streams import Stream as RESTStreamBase
 from typing import Optional
 
+from tap_cbx1.constants import ORG_ID_KEY, CODE_KEY
+
+
 # The SingletonMeta metaclass makes your streams reuse the same authenticator instance.
 # If this behaviour interferes with your use-case, you can remove the metaclass.
 class TapCBX1Auth(OAuthAuthenticator, metaclass=SingletonMeta):
@@ -27,7 +30,7 @@ class TapCBX1Auth(OAuthAuthenticator, metaclass=SingletonMeta):
         """Define the OAuth request body for the TapCBX1 API."""
         return {
             "authenticationType": "ACCESS_KEY",
-            "code": self.stream.config.get("access_key")
+            "code": self.stream.config.get(CODE_KEY)
         }
 
     @classmethod
@@ -61,7 +64,7 @@ class TapCBX1Auth(OAuthAuthenticator, metaclass=SingletonMeta):
         request_time = utc_now()
         auth_request_payload = self.oauth_request_payload
         headers = {
-            "x-organisation-id": self.stream.config.get("organization_id")
+            "x-organisation-id": self.stream.config.get(ORG_ID_KEY)
         }
         token_response = requests.get(self.auth_endpoint, params=auth_request_payload, headers=headers)
         try:

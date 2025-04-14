@@ -7,10 +7,12 @@ from singer_sdk import Stream, Tap
 from singer_sdk import typing as th
 
 from tap_cbx1 import streams
+from tap_cbx1.constants import ORG_ID_KEY, CODE_KEY
 
 
 class TapCBX1(Tap):
     """CBX1 tap class."""
+
     def __init__(
             self,
             config=None,
@@ -18,16 +20,15 @@ class TapCBX1(Tap):
             state=None,
             parse_env_config=False,
             validate_config=True,
-        ) -> None:
-            self.config_file = config[0]
-            super().__init__(config, catalog, state, parse_env_config, validate_config)
+    ) -> None:
+        self.config_file = config[0]
+        super().__init__(config, catalog, state, parse_env_config, validate_config)
 
     name = "tap-cbx1"
 
     config_jsonschema = th.PropertiesList(
-        th.Property("access_key", th.StringType, required=True),
-        th.Property("organization_id", th.StringType, required=True),
-        th.Property("user_id", th.StringType, required=True)
+        th.Property(CODE_KEY, th.StringType, required=True),
+        th.Property(ORG_ID_KEY, th.StringType, required=True)
     ).to_dict()
 
     def discover_streams(self) -> List[Stream]:

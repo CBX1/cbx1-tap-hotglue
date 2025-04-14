@@ -50,8 +50,6 @@ class CBX1Stream(RESTStream):
     @property
     def http_headers(self) -> dict:
         result = self._http_headers
-        result["x-organisation-id"] = self.config.get("organization_id")
-        result["x-user-id"] = self.config.get("user_id")
         return result
     
     def get_url(self, context: dict | None) -> str:
