@@ -11,6 +11,7 @@ from tap_cbx1.auth import TapCBX1Auth
 
 _TToken = TypeVar("_TToken")
 
+
 class CBX1Stream(RESTStream):
     """CBX1 stream class."""
 
@@ -18,7 +19,6 @@ class CBX1Stream(RESTStream):
     def url_base(self):
         return 'https://qa-api.cbx1.app/api/t/v1'
 
-    
     page_size = 10
     rest_method = "POST"
     replication_key_field = "updatedAt"
@@ -29,7 +29,7 @@ class CBX1Stream(RESTStream):
         return TapCBX1Auth.create_for_stream(self)
 
     def get_next_page_token(
-        self, response: requests.Response, previous_token: Optional[Any]
+            self, response: requests.Response, previous_token: Optional[Any]
     ) -> Optional[Any]:
         """Return a token for identifying next page or None if no more pages."""
         previous_token = previous_token or 0
@@ -45,24 +45,23 @@ class CBX1Stream(RESTStream):
             start_date = parse(self.config.get("start_date"))
         rep_key = self.get_starting_timestamp(context)
         return rep_key or start_date
-    
 
     @property
     def http_headers(self) -> dict:
         result = self._http_headers
         return result
-    
+
     def get_url(self, context: dict | None) -> str:
-        url = "".join([self.url_base, self.path or "", "/list"])
+        url = "".join([self.url_base, self.path or "", "/list"]) # TODO -- Should Ideally populate the `target` here?
         return url
 
     def prepare_request_payload(
-        self,
-        context: dict | None,
-        next_page_token: _TToken | None,
+            self,
+            context: dict | None,
+            next_page_token: _TToken | None,
     ) -> dict | None:
         start_date = self.get_starting_time(context)
-        
+
         payload = {
             "pageNumber": next_page_token,
             "pageSize": self.page_size,
@@ -78,7 +77,7 @@ class CBX1Stream(RESTStream):
                 }
             }
         return payload
-    
+
     def request_records(self, context: dict | None) -> Iterable[dict]:
         next_page_token = 0
         decorated_request = self.request_decorator(self._request)
@@ -95,8 +94,8 @@ class CBX1Stream(RESTStream):
                 yield content
 
             next_page_token = self.get_next_page_token(resp, next_page_token)
-            finished = next_page_token is None        
-    
+            finished = next_page_token is None
+
     def _write_state_message(self) -> None:
         """Write out a STATE message with the latest state."""
         tap_state = self.tap_state
@@ -107,7 +106,6 @@ class CBX1Stream(RESTStream):
                     tap_state["bookmarks"][stream_name] = {"partitions": []}
 
         singer.write_message(StateMessage(value=tap_state))
-        
+
     def get_replication_key_signpost(self, context: Optional[dict]) -> Optional[Any]:
         return None
-    

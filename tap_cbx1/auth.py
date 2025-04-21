@@ -9,7 +9,7 @@ from singer_sdk.authenticators import OAuthAuthenticator, SingletonMeta
 from singer_sdk.helpers._util import utc_now
 from singer_sdk.streams import Stream as RESTStreamBase
 
-from tap_cbx1.constants import ORG_ID_KEY, CODE_KEY
+from tap_cbx1.constants import ORG_ID_KEY, CODE_KEY, ACCESS_TOKEN
 
 
 # The SingletonMeta metaclass makes your streams reuse the same authenticator instance.
@@ -39,7 +39,7 @@ class TapCBX1Auth(OAuthAuthenticator, metaclass=SingletonMeta):
     def create_for_stream(cls, stream) -> "TapCBX1Auth":
         return cls(
             stream=stream,
-            auth_endpoint=os.getenv("BASE_URL", default="https://qa-api.cbx1.app/") + "api/g/v1/auth/token/generate",
+            auth_endpoint=os.getenv("BASE_URL", default="https://qa-api.cbx1.app/") + "api/g/v1/auth/token/generate"
         )
 
     def is_token_valid(self) -> bool:
@@ -83,9 +83,8 @@ class TapCBX1Auth(OAuthAuthenticator, metaclass=SingletonMeta):
         self.last_refreshed = request_time
 
         # store access_token in config file
-        self._tap._config["access_token"] = self.access_token
+        self._tap._config[ACCESS_TOKEN] = self.access_token
         self._tap._config["expires_in"] = self.expires_in
-        # self._tap._config["refresh_token"] = token_json["refresh_token"]
 
         with open(self._tap.config_file, "w") as outfile:
             json.dump(self._tap._config, outfile, indent=4)
