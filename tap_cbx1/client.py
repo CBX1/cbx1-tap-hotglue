@@ -52,8 +52,16 @@ class CBX1Stream(RESTStream):
         return result
 
     def get_url(self, context: dict | None) -> str:
-        url = "".join([self.url_base, self.path or "", "/list"]) # TODO -- Should Ideally populate the `target` here?
+        url = "".join([self.url_base, self.path or "", "/list"])
         return url
+    
+    def get_url_params(
+            self,
+            context: dict | None,
+            next_page_token: Any | None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"deanonymizePIIData": "true"}
+        return params
 
     def prepare_request_payload(
             self,
