@@ -65,10 +65,8 @@ class TapCBX1Auth(OAuthAuthenticator, metaclass=SingletonMeta):
         """
         request_time = utc_now()
         auth_request_payload = self.oauth_request_payload
-        headers = {
-            "x-organisation-id": self.stream.config.get(ORG_ID_KEY)
-        }
-        token_response = requests.get(self.auth_endpoint, params=auth_request_payload, headers=headers)
+        auth_request_payload["orgId"] = self.stream.config.get(ORG_ID_KEY)
+        token_response = requests.get(self.auth_endpoint, params=auth_request_payload)
         try:
             token_response.raise_for_status()
             self.logger.info("OAuth authorization attempt was successful.")
