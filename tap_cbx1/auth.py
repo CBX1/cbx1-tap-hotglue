@@ -32,7 +32,8 @@ class TapCBX1Auth(OAuthAuthenticator, metaclass=SingletonMeta):
         """Define the OAuth request body for the TapCBX1 API."""
         return {
             "authenticationType": "ACCESS_KEY",
-            "code": self.stream.config.get(CODE_KEY)
+            "code": self.stream.config.get(CODE_KEY),
+            "orgId": self.stream.config.get(ORG_ID_KEY),
         }
 
     @classmethod
@@ -65,7 +66,6 @@ class TapCBX1Auth(OAuthAuthenticator, metaclass=SingletonMeta):
         """
         request_time = utc_now()
         auth_request_payload = self.oauth_request_payload
-        auth_request_payload["orgId"] = self.stream.config.get(ORG_ID_KEY)
         token_response = requests.get(self.auth_endpoint, params=auth_request_payload)
         try:
             token_response.raise_for_status()
