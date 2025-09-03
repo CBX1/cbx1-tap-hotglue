@@ -59,13 +59,7 @@ class AccountStream(CBX1Stream):
         th.Property("annualRevenueRange", th.StringType),
         th.Property("employeeCount", th.IntegerType),
         th.Property("employeeRange", th.StringType),
-        th.Property("hqLocation", th.ObjectType(
-            th.Property("buildingOrStreet", th.StringType),
-            th.Property("city", th.StringType),
-            th.Property("state", th.StringType),
-            th.Property("zipCode", th.StringType),
-            th.Property("country", th.StringType)
-        )),
+        th.Property("hqLocation", th.ObjectType(address)),
         th.Property("ownershipType", th.StringType),
         th.Property("businessModel", th.StringType),
         th.Property("fundingHistory", th.StringType),
