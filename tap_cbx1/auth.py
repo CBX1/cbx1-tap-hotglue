@@ -84,5 +84,3 @@ class TapCBX1Auth(OAuthAuthenticator, metaclass=SingletonMeta):
         self._tap._config[ACCESS_TOKEN] = self.access_token
         self._tap._config["expires_in"] = self.expires_in
 
-        # with open(self._tap.config_file, "w") as outfile:
-        #     json.dump(self._tap._config, outfile, indent=4)
