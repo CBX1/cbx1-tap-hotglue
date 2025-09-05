@@ -1,12 +1,10 @@
 """CBX1 tap class."""
 
-import inspect
 from typing import List
 
-from singer_sdk import Stream, Tap
+from singer_sdk import Tap
 from singer_sdk import typing as th
 
-from tap_cbx1 import streams
 from tap_cbx1.client import CBX1Stream
 from tap_cbx1.constants import ORG_ID_KEY, CODE_KEY
 from tap_cbx1.streams import AccountStream, ContactStream
@@ -15,7 +13,6 @@ STREAM_TYPES = [
     AccountStream,
     ContactStream,
 ]
-
 
 class TapCBX1(Tap):
     """CBX1 tap class."""

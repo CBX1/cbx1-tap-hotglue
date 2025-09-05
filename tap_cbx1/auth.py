@@ -1,6 +1,5 @@
 """TapCBX1 Authentication."""
 
-import json
 import os
 from typing import Optional
 
