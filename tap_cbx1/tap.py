@@ -7,7 +7,14 @@ from singer_sdk import Stream, Tap
 from singer_sdk import typing as th
 
 from tap_cbx1 import streams
+from tap_cbx1.client import CBX1Stream
 from tap_cbx1.constants import ORG_ID_KEY, CODE_KEY
+from tap_cbx1.streams import AccountStream, ContactStream
+
+STREAM_TYPES = [
+    AccountStream,
+    ContactStream,
+]
 
 
 class TapCBX1(Tap):
@@ -31,13 +38,8 @@ class TapCBX1(Tap):
         th.Property(ORG_ID_KEY, th.StringType, required=True)
     ).to_dict()
 
-    def discover_streams(self) -> List[Stream]:
-        """Return a list of discovered streams."""
-        return [
-            cls(self)
-            for _, cls in inspect.getmembers(streams, inspect.isclass)
-            if cls.__module__ == "tap_cbx1.streams" and hasattr(cls, "name")
-        ]
+    def discover_streams(self) -> List[CBX1Stream]:
+        return [stream_class(tap=self) for stream_class in STREAM_TYPES]
 
 
 if __name__ == "__main__":

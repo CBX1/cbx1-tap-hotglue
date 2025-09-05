@@ -1,19 +1,23 @@
-"""REST client handling, including LightspeedStream base class."""
+"""REST client handling, including CBX1Stream base class."""
 
 from typing import Any, Iterable, Optional, TypeVar
+from functools import cached_property
 import requests
 from pendulum import parse
-from singer_sdk.authenticators import BearerTokenAuthenticator
 from singer_sdk.streams import RESTStream
 import singer
 from singer import StateMessage
 from tap_cbx1.auth import TapCBX1Auth
+from tap_cbx1.schema_utils import fetch_schema_from_api
 
 _TToken = TypeVar("_TToken")
 
 
 class CBX1Stream(RESTStream):
     """CBX1 stream class."""
+
+    # Target name for schema discovery (e.g., "accounts", "contacts")
+    target_name = None
 
     @property
     def url_base(self):
@@ -117,3 +121,21 @@ class CBX1Stream(RESTStream):
 
     def get_replication_key_signpost(self, context: Optional[dict]) -> Optional[Any]:
         return None
+
+    def get_schema(self) -> dict:
+        """Get schema dynamically from CBX1 API."""
+        if not self.target_name:
+            raise ValueError(f"target_name must be set for {self.__class__.__name__}")
+        
+        headers = self.http_headers
+        schema = fetch_schema_from_api(self.url_base, self.target_name, headers)
+        
+        if schema is None:
+            raise RuntimeError(f"Failed to fetch schema for target {self.target_name}")
+        
+        return schema
+
+    @cached_property
+    def schema(self) -> dict:
+        """Cached schema property."""
+        return self.get_schema()
