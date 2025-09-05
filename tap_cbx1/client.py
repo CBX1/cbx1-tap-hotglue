@@ -50,10 +50,6 @@ class CBX1Stream(RESTStream):
         rep_key = self.get_starting_timestamp(context)
         return rep_key or start_date
 
-    @property
-    def http_headers(self) -> dict:
-        result = self._http_headers
-        return result
 
     def get_url(self, context: dict | None) -> str:
         url = "".join([self.url_base, self.path or "", "/list"])
@@ -89,6 +85,11 @@ class CBX1Stream(RESTStream):
                 }
             }
         return payload
+
+    @property
+    def http_headers(self) -> dict:
+        result = self._http_headers
+        return result
 
     def request_records(self, context: dict | None) -> Iterable[dict]:
         next_page_token = 0
@@ -127,7 +128,10 @@ class CBX1Stream(RESTStream):
         if not self.target_name:
             raise ValueError(f"target_name must be set for {self.__class__.__name__}")
         
-        headers = self.http_headers
+        headers = {}
+        if self.authenticator:
+            headers.update(self.authenticator.auth_headers or {})
+        
         schema = fetch_schema_from_api(self.url_base, self.target_name, headers)
         
         if schema is None:
