@@ -59,7 +59,7 @@ class AccountStream(CBX1Stream):
         th.Property("annualRevenueRange", th.StringType),
         th.Property("employeeCount", th.IntegerType),
         th.Property("employeeRange", th.StringType),
-        th.Property("hqLocation", th.ObjectType(address)),
+        th.Property("hqLocation", address),
         th.Property("ownershipType", th.StringType),
         th.Property("businessModel", th.StringType),
         th.Property("fundingHistory", th.StringType),
@@ -69,7 +69,6 @@ class AccountStream(CBX1Stream):
         th.Property("twitterUrl", th.StringType),
         th.Property("facebookUrl", th.StringType),
         th.Property("logoUrl", th.StringType),
-        th.Property("products", th.ArrayType(product)),
     ).to_dict()
 
 
