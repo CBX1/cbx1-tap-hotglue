@@ -52,7 +52,6 @@ class CBX1Stream(RESTStream):
 
 
     def get_url(self, context: dict | None) -> str:
-        self.path = self.target_name
         url = "".join([self.url_base, self.path or "", "/list"])
         return url
     
