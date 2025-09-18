@@ -39,7 +39,7 @@ class TapCBX1Auth(OAuthAuthenticator, metaclass=SingletonMeta):
     def create_for_stream(cls, stream) -> "TapCBX1Auth":
         return cls(
             stream=stream,
-            auth_endpoint=os.getenv("BASE_URL", default="https://qa-api.cbx1.app/") + "api/g/v1/auth/tokens"
+            auth_endpoint=os.getenv("BASE_URL") + "api/g/v1/auth/tokens"
         )
 
     def is_token_valid(self) -> bool:

@@ -21,7 +21,7 @@ class CBX1Stream(RESTStream):
 
     @property
     def url_base(self):
-        return os.getenv("BASE_URL", default="https://qa-api.cbx1.app/") + "api/t/v1"
+        return os.getenv("BASE_URL") + "api/t/v1"
 
     page_size = 10
     rest_method = "POST"
