@@ -6,6 +6,7 @@ import requests
 from pendulum import parse
 from singer_sdk.streams import RESTStream
 import singer
+import os
 from singer import StateMessage
 from tap_cbx1.auth import TapCBX1Auth
 from tap_cbx1.schema_utils import fetch_schema_from_api
