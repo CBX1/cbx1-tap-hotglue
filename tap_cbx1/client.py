@@ -10,6 +10,7 @@ import os
 from singer import StateMessage
 from tap_cbx1.auth import TapCBX1Auth
 from tap_cbx1.schema_utils import fetch_schema_from_api
+from datetime import timedelta
 
 _TToken = TypeVar("_TToken")
 
@@ -76,6 +77,8 @@ class CBX1Stream(RESTStream):
             "pageSize": self.page_size,
         }
         if self.replication_key_field and start_date:
+            # Increment start date by 1 millisecond
+            start_date = start_date + timedelta(milliseconds=1)
             iso_start_date = start_date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
             iso_now = parse("now").strftime("%Y-%m-%dT%H:%M:%S.%fZ")
             payload["filters"] = {
