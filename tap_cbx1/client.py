@@ -75,16 +75,25 @@ class CBX1Stream(RESTStream):
             "pageNumber": next_page_token,
             "pageSize": self.page_size,
         }
+
+        # Always filter out test records (testMetadata: null means not a test record)
+        filters = {
+            "testMetadata": {
+                "type": "EQUALS",
+                "value": None
+            }
+        }
+
         if self.replication_key_field and start_date:
             iso_start_date = start_date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
             iso_now = parse("now").strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-            payload["filters"] = {
-                self.replication_key_field: {
-                    "type": "BETWEEN",
-                    "value": iso_start_date,
-                    "endValue": iso_now
-                }
+            filters[self.replication_key_field] = {
+                "type": "BETWEEN",
+                "value": iso_start_date,
+                "endValue": iso_now
             }
+
+        payload["filters"] = filters
         return payload
 
     @property
