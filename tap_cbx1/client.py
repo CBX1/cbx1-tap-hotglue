@@ -9,7 +9,7 @@ import singer
 import os
 from singer import StateMessage
 from tap_cbx1.auth import TapCBX1Auth
-from tap_cbx1.schema_utils import fetch_schema_from_api
+from tap_cbx1.schema_utils import fetch_schema_from_api, build_schema_from_multiple_contents
 from datetime import timedelta
 
 _TToken = TypeVar("_TToken")
@@ -23,7 +23,7 @@ class CBX1Stream(RESTStream):
 
     @property
     def url_base(self):
-        return os.getenv("BASE_URL") + "api/t/v1"
+        return os.getenv("BASE_URL") + "api/t/v1/targets/integrations"
 
     page_size = 10
     rest_method = "POST"
@@ -54,7 +54,7 @@ class CBX1Stream(RESTStream):
 
 
     def get_url(self, context: dict | None) -> str:
-        url = "".join([self.url_base, self.path or "", "/list"])
+        url = "".join([self.url_base, self.path or "", "/HUBSPOT/list"])
         return url
     
     def get_url_params(
