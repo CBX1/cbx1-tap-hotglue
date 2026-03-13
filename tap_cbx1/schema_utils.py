@@ -191,7 +191,7 @@ def fetch_schema_from_api(url_base: str, target: str, headers: Dict[str, str]) -
     
     try:
         # Use the same endpoint as the client to get content response
-        url = f"{url_base}/HUBSPOT/list"
+        url = f"{url_base}/{target}/HUBSPOT/list"
         
         # Fetch multiple pages to get comprehensive schema
         all_contents = []
