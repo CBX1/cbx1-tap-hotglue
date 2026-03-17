@@ -9,7 +9,7 @@ import singer
 import os
 from singer import StateMessage
 from tap_cbx1.auth import TapCBX1Auth
-from tap_cbx1.schema_utils import fetch_schema_from_api, build_schema_from_multiple_contents
+from tap_cbx1.schema_utils import fetch_schema_from_api
 from datetime import timedelta
 from tap_cbx1.constants import CRM_KEY
 
@@ -147,7 +147,7 @@ class CBX1Stream(RESTStream):
         if self.authenticator:
             headers.update(self.authenticator.auth_headers or {})
         
-        schema = fetch_schema_from_api(self.url_base, self.target_name, headers)
+        schema = fetch_schema_from_api(self.url_base, self.target_name,self.config.get(CRM_KEY), headers)
         
         if schema is None:
             raise RuntimeError(f"Failed to fetch schema for target {self.target_name}")
