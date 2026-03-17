@@ -85,99 +85,9 @@ def parse_flattened_schema(flattened_schema: Dict[str, Any]) -> th.PropertiesLis
     return th.PropertiesList(*properties)
 
 
-def build_schema_from_multiple_contents(contents: list) -> th.PropertiesList:
-    """
-    Build schema from multiple CBX1 content responses (actual data records).
-    
-    Args:
-        contents: List of content objects from CBX1 API response containing actual data
-        
-    Returns:
-        PropertiesList with converted properties
-    """
-    properties = []
-    field_types = {}  # Track field types across all records
-    
-    # Define fields that should be treated as datetime regardless of data types
-    datetime_fields = {"createdAt", "updatedAt", "dataUpdatedAt"}
-    
-    for content in contents:
-        # Content is a dict with field names and values
-        for field_name, field_value in content.items():
-            if field_name is None:
-                continue
-                
-            # Infer type from the actual value
-            if field_name not in field_types:
-                if field_name in datetime_fields:
-                    field_types[field_name] = "datetime"
-                elif field_value is None:
-                    field_types[field_name] = "string"  # Default to string for null values
-                elif isinstance(field_value, bool):
-                    field_types[field_name] = "boolean"
-                elif isinstance(field_value, int):
-                    field_types[field_name] = "integer"
-                elif isinstance(field_value, float):
-                    field_types[field_name] = "number"
-                elif isinstance(field_value, list):
-                    field_types[field_name] = "array"
-                elif isinstance(field_value, dict):
-                    field_types[field_name] = "object"
-                else:
-                    field_types[field_name] = "string"
-            else:
-                # If we find different types for the same field, default to string
-                current_type = field_types[field_name]
-                if field_name in datetime_fields:
-                    field_types[field_name] = "datetime"
-                elif field_value is None:
-                    # Keep existing type for null values
-                    pass
-                elif isinstance(field_value, bool):
-                    if current_type != "boolean":
-                        field_types[field_name] = "string"
-                elif isinstance(field_value, int):
-                    if current_type == "boolean":
-                        field_types[field_name] = "string"
-                    elif current_type == "string":
-                        pass
-                    elif current_type == "number":
-                        pass
-                    else:
-                        field_types[field_name] = "integer"
-                elif isinstance(field_value, float):
-                    if current_type in ["boolean", "integer"]:
-                        field_types[field_name] = "string"
-                    elif current_type == "string":
-                        pass
-                    else:
-                        field_types[field_name] = "number"
-                elif isinstance(field_value, list):
-                    if current_type not in ["array", "string"]:
-                        field_types[field_name] = "string"
-                elif isinstance(field_value, dict):
-                    if current_type not in ["object", "string"]:
-                        field_types[field_name] = "string"
-                else:
-                    # For strings, keep the most specific type found
-                    pass
-    
-    # Create properties from collected field types
-    for field_name, data_type in field_types.items():
-        # Override datetime fields regardless of inferred type
-        if field_name in datetime_fields:
-            singer_type = th.DateTimeType()
-        else:
-            singer_type = convert_json_type_to_singer(data_type)
-        
-        properties.append(th.Property(field_name, singer_type))
-    
-    return th.PropertiesList(*properties)
-
-
 def fetch_schema_from_api(url_base: str, target: str, headers: Dict[str, str]) -> Optional[Dict[str, Any]]:
     """
-    Fetch schema from CBX1 API endpoint using content response.
+    Fetch schema from CBX1 API endpoint.
     
     Args:
         url_base: Base URL for the API
@@ -190,54 +100,24 @@ def fetch_schema_from_api(url_base: str, target: str, headers: Dict[str, str]) -
     logger = logging.getLogger(__name__)
     
     try:
-        # Use the same endpoint as the client to get content response
-        url = f"{url_base}/{target}/HUBSPOT/list"
+        url = f"{url_base}/targets/{target}/debug/jsonSchema"
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
         
-        # Fetch multiple pages to get comprehensive schema
-        all_contents = []
-        page_number = 0
-        max_pages = 2 # Limit to prevent infinite loops
+        data = response.json()
         
-        while page_number < max_pages:
-            payload = {
-                "pageNumber": page_number,
-                "pageSize": 10,  # Get more records per page for better schema coverage
-                "filters": {
-                    "testMetadata": {
-                        "type": "EQUALS", 
-                        "value": None
-                    }
-                }
-            }
+        # Extract the flattened schema from the response
+        if (data.get("status", {}).get("code") == "CM000" and 
+            data.get("data") and 
+            len(data["data"]) > 1 and
+            "flattenedJsonSchemaForJsonPath" in data["data"][1]):
             
-            response = requests.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            
-            data = response.json()
-            
-            # Extract the content from the response
-            if (data.get("status", {}).get("code") == "CM000" and 
-                data.get("data") and 
-                data["data"].get("content")):
-                
-                contents = data["data"]["content"]
-                all_contents.extend(contents)
-                
-                # Check if there are more pages
-                page_data = data.get("data", {})
-                if page_data.get("number") >= page_data.get("totalPages") - 1:
-                    break
-                    
-                page_number += 1
-            else:
-                break
-        
-        if not all_contents:
-            logger.error(f"No content found for target {target}")
+            flattened_schema = data["data"][1]["flattenedJsonSchemaForJsonPath"]
+            properties_list = parse_flattened_schema(flattened_schema)
+            return properties_list.to_dict()
+        else:
+            logger.error(f"Invalid schema response format for target {target}")
             return None
-            
-        properties_list = build_schema_from_multiple_contents(all_contents)
-        return properties_list.to_dict()
             
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to fetch schema for target {target}: {e}")
