@@ -11,6 +11,7 @@ from singer import StateMessage
 from tap_cbx1.auth import TapCBX1Auth
 from tap_cbx1.schema_utils import fetch_schema_from_api, build_schema_from_multiple_contents
 from datetime import timedelta
+from tap_cbx1.constants import CRM_KEY
 
 _TToken = TypeVar("_TToken")
 
@@ -54,7 +55,8 @@ class CBX1Stream(RESTStream):
 
 
     def get_url(self, context: dict | None) -> str:
-        url = "".join([self.url_base, self.path or "", "/HUBSPOT/list"])
+        crm = self.config.get(CRM_KEY)
+        url = "".join([self.url_base, self.path or "", f"/{crm}/list"])
         return url
     
     def get_url_params(
