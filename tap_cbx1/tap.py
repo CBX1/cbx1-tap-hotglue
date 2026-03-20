@@ -7,10 +7,9 @@ from singer_sdk import typing as th
 
 from tap_cbx1.client import CBX1Stream
 from tap_cbx1.constants import ORG_ID_KEY, CODE_KEY
-from tap_cbx1.streams import AccountStream, ContactStream
+from tap_cbx1.streams import  ContactStream
 
 STREAM_TYPES = [
-    AccountStream,
     ContactStream,
 ]
 
