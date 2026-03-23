@@ -11,6 +11,7 @@ from singer import StateMessage
 from tap_cbx1.auth import TapCBX1Auth
 from tap_cbx1.schema_utils import fetch_schema_from_api
 from datetime import timedelta
+from tap_cbx1.constants import CRM_KEY
 
 _TToken = TypeVar("_TToken")
 
@@ -23,7 +24,7 @@ class CBX1Stream(RESTStream):
 
     @property
     def url_base(self):
-        return os.getenv("BASE_URL") + "api/t/v1"
+        return os.getenv("BASE_URL") + "api/t/v1/targets/integrations"
 
     page_size = 10
     rest_method = "POST"
@@ -54,7 +55,8 @@ class CBX1Stream(RESTStream):
 
 
     def get_url(self, context: dict | None) -> str:
-        url = "".join([self.url_base, self.path or "", "/list"])
+        crm = self.config.get(CRM_KEY)
+        url = "".join([self.url_base, self.path or "", f"/{crm}/list"])
         return url
     
     def get_url_params(
@@ -145,7 +147,7 @@ class CBX1Stream(RESTStream):
         if self.authenticator:
             headers.update(self.authenticator.auth_headers or {})
         
-        schema = fetch_schema_from_api(self.url_base, self.target_name, headers)
+        schema = fetch_schema_from_api(self.url_base, self.target_name,self.config.get(CRM_KEY), headers)
         
         if schema is None:
             raise RuntimeError(f"Failed to fetch schema for target {self.target_name}")

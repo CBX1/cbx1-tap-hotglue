@@ -85,7 +85,7 @@ def parse_flattened_schema(flattened_schema: Dict[str, Any]) -> th.PropertiesLis
     return th.PropertiesList(*properties)
 
 
-def fetch_schema_from_api(url_base: str, target: str, headers: Dict[str, str]) -> Optional[Dict[str, Any]]:
+def fetch_schema_from_api(url_base: str, target: str,crm:str, headers: Dict[str, str]) -> Optional[Dict[str, Any]]:
     """
     Fetch schema from CBX1 API endpoint.
     
@@ -100,7 +100,7 @@ def fetch_schema_from_api(url_base: str, target: str, headers: Dict[str, str]) -
     logger = logging.getLogger(__name__)
     
     try:
-        url = f"{url_base}/targets/{target}/debug/jsonSchema"
+        url = f"{url_base}/{target}/{crm}/jsonSchema"
         response = requests.get(url, headers=headers)
         response.raise_for_status()
         
