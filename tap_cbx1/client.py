@@ -158,3 +158,73 @@ class CBX1Stream(RESTStream):
     def schema(self) -> dict:
         """Cached schema property."""
         return self.get_schema()
+
+
+class CBX1EventStream(CBX1Stream):
+    """Base class for event streams using keyset (cursor-based) pagination."""
+
+    page_size = 1000
+    rest_method = "POST"
+    replication_key_field = "event_timestamp"
+
+    def get_url(self, context: dict | None) -> str:
+        crm = self.config.get(CRM_KEY)
+        url = "".join([self.url_base, self.path or "", f"/{crm}/events"])
+        return url
+
+    def prepare_request_payload(
+            self,
+            context: dict | None,
+            next_page_token: Any | None,
+    ) -> dict | None:
+        """Build keyset pagination request payload."""
+        payload = {
+            "pageSize": self.page_size,
+            "botFilterEnabled": self.config.get("bot_filter", True),
+        }
+
+        # next_page_token is the cursor (ISO timestamp string) from previous response
+        if next_page_token:
+            payload["cursor"] = next_page_token
+        else:
+            # First page - use replication key bookmark or start_date
+            start_date = self.get_starting_time(context)
+            if start_date:
+                payload["cursor"] = start_date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+        # Add event actions filter if configured
+        event_actions = getattr(self, 'event_actions', None)
+        if event_actions:
+            payload["eventActions"] = event_actions
+
+        return payload
+
+    def get_next_page_token(
+            self, response: requests.Response, previous_token: Any | None
+    ) -> Any | None:
+        """Return the nextCursor if hasMore is true, else None."""
+        data = response.json().get('data', {})
+        if data.get('hasMore', False):
+            return data.get('nextCursor')
+        return None
+
+    def request_records(self, context: dict | None) -> Iterable[dict]:
+        """Override to handle keyset pagination response format."""
+        next_page_token = None
+        decorated_request = self.request_decorator(self._request)
+        finished = False
+
+        while not finished:
+            prepared_request = self.prepare_request(
+                context,
+                next_page_token=next_page_token
+            )
+            resp = decorated_request(prepared_request, context)
+            data = resp.json().get('data', {})
+            records = data.get('records', [])
+
+            for record in records:
+                yield record
+
+            next_page_token = self.get_next_page_token(resp, next_page_token)
+            finished = next_page_token is None
