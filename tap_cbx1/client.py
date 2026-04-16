@@ -165,7 +165,7 @@ class CBX1EventStream(CBX1Stream):
 
     page_size = 1000
     rest_method = "POST"
-    replication_key_field = "eventTimestamp"
+    replication_key_field = "occurredAt"
 
     def get_url(self, context: dict | None) -> str:
         crm = self.config.get(CRM_KEY)
@@ -174,17 +174,22 @@ class CBX1EventStream(CBX1Stream):
 
     @cached_property
     def schema(self) -> dict:
-        """Return a minimal schema with eventTimestamp typed as datetime.
+        """Schema matching the enrichment-mapped output from the backend.
 
-        Event streams don't use the jsonSchema discovery endpoint.
-        The Singer SDK needs the replication key in the schema to determine
-        its type — without this it raises 'empty type_dict' ValueError.
+        The backend applies TenantEgestionMapping before returning records,
+        so fields here are the MAPPED names (not raw Redshift column names).
+        Using additionalProperties: true so any extra mapped fields pass through.
         """
         return {
             "type": "object",
+            "additionalProperties": True,
             "properties": {
-                "eventTimestamp": {"type": ["string", "null"], "format": "date-time"},
-                "eventId": {"type": ["string", "null"]},
+                "uuid": {"type": ["string", "null"]},
+                "occurredAt": {"type": ["string", "null"], "format": "date-time"},
+                "eventName": {"type": ["string", "null"]},
+                "email": {"type": ["string", "null"]},
+                "objectId": {"type": ["string", "null"]},
+                "properties": {"type": ["object", "null"]},
             },
         }
 
