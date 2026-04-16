@@ -165,12 +165,28 @@ class CBX1EventStream(CBX1Stream):
 
     page_size = 1000
     rest_method = "POST"
-    replication_key_field = "event_timestamp"
+    replication_key_field = "eventTimestamp"
 
     def get_url(self, context: dict | None) -> str:
         crm = self.config.get(CRM_KEY)
         url = "".join([self.url_base, self.path or "", f"/{crm}/events"])
         return url
+
+    @cached_property
+    def schema(self) -> dict:
+        """Return a minimal schema with eventTimestamp typed as datetime.
+
+        Event streams don't use the jsonSchema discovery endpoint.
+        The Singer SDK needs the replication key in the schema to determine
+        its type — without this it raises 'empty type_dict' ValueError.
+        """
+        return {
+            "type": "object",
+            "properties": {
+                "eventTimestamp": {"type": ["string", "null"], "format": "date-time"},
+                "eventId": {"type": ["string", "null"]},
+            },
+        }
 
     def prepare_request_payload(
             self,
@@ -183,14 +199,15 @@ class CBX1EventStream(CBX1Stream):
             "botFilterEnabled": self.config.get("bot_filter", True),
         }
 
-        # next_page_token is the cursor (ISO timestamp string) from previous response
-        if next_page_token:
-            payload["cursor"] = next_page_token
+        # next_page_token is a dict {lastCreatedAt, lastEventId} from previous response
+        if next_page_token and isinstance(next_page_token, dict):
+            payload["lastCreatedAt"] = next_page_token.get("lastCreatedAt")
+            payload["lastEventId"] = next_page_token.get("lastEventId")
         else:
-            # First page - use replication key bookmark or start_date
-            start_date = self.get_starting_time(context)
+            # First page - use start_date from config if available
+            start_date = self.config.get("start_date")
             if start_date:
-                payload["cursor"] = start_date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+                payload["lastCreatedAt"] = start_date
 
         # Add event actions filter if configured
         event_actions = getattr(self, 'event_actions', None)
@@ -202,10 +219,13 @@ class CBX1EventStream(CBX1Stream):
     def get_next_page_token(
             self, response: requests.Response, previous_token: Any | None
     ) -> Any | None:
-        """Return the nextCursor if hasMore is true, else None."""
+        """Return compound cursor {lastCreatedAt, lastEventId} if hasMore, else None."""
         data = response.json().get('data', {})
         if data.get('hasMore', False):
-            return data.get('nextCursor')
+            return {
+                "lastCreatedAt": data.get('nextCursor'),
+                "lastEventId": data.get('nextEventId'),
+            }
         return None
 
     def request_records(self, context: dict | None) -> Iterable[dict]:

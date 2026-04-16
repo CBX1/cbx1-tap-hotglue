@@ -17,9 +17,8 @@ class EmailEventStream(CBX1EventStream):
     name = "email_events"
     path = "/EMAIL_EVENT"
     target_name = "EMAIL_EVENT"
-    primary_keys = ["id"]
-    replication_key = "event_timestamp"
-    event_actions = ["open", "click"]
+    primary_keys = ["eventId"]
+    replication_key = "eventTimestamp"
 
 
 class FormEventStream(CBX1EventStream):
@@ -27,15 +26,14 @@ class FormEventStream(CBX1EventStream):
     name = "form_events"
     path = "/FORM_EVENT"
     target_name = "FORM_EVENT"
-    primary_keys = ["id"]
-    replication_key = "event_timestamp"
+    primary_keys = ["eventId"]
+    replication_key = "eventTimestamp"
 
 
-class PageVisitStream(CBX1EventStream):
-    """Page visit stream."""
-    name = "page_visits"
-    path = "/PAGE_VISIT"
-    target_name = "PAGE_VISIT"
-    primary_keys = ["id"]
-    replication_key = "event_timestamp"
-
+class PageEventStream(CBX1EventStream):
+    """Page event stream."""
+    name = "page_events"
+    path = "/PAGE_EVENT"
+    target_name = "PAGE_EVENT"
+    primary_keys = ["eventId"]
+    replication_key = "eventTimestamp"
