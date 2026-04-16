@@ -7,10 +7,13 @@ from singer_sdk import typing as th
 
 from tap_cbx1.client import CBX1Stream
 from tap_cbx1.constants import ORG_ID_KEY, CODE_KEY
-from tap_cbx1.streams import  ContactStream
+from tap_cbx1.streams import ContactStream, EmailEventStream, FormEventStream, PageVisitStream
 
 STREAM_TYPES = [
     ContactStream,
+    EmailEventStream,
+    FormEventStream,
+    PageVisitStream,
 ]
 
 class TapCBX1(Tap):
@@ -31,11 +34,25 @@ class TapCBX1(Tap):
 
     config_jsonschema = th.PropertiesList(
         th.Property(CODE_KEY, th.StringType, required=True),
-        th.Property(ORG_ID_KEY, th.StringType, required=True)
+        th.Property(ORG_ID_KEY, th.StringType, required=True),
+        th.Property(
+            "enabled_streams",
+            th.ArrayType(th.StringType),
+            required=False,
+            description="List of stream names to enable. If not set, only 'contacts' is enabled for backward compatibility.",
+        ),
     ).to_dict()
 
     def discover_streams(self) -> List[CBX1Stream]:
-        return [stream_class(tap=self) for stream_class in STREAM_TYPES]
+        enabled = self.config.get("enabled_streams")
+        if enabled is None:
+            # Backward compatible: only contacts if not specified
+            return [ContactStream(tap=self)]
+        return [
+            stream_class(tap=self)
+            for stream_class in STREAM_TYPES
+            if stream_class.name in enabled
+        ]
 
 
 if __name__ == "__main__":
