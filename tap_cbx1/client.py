@@ -184,12 +184,22 @@ class CBX1EventStream(CBX1Stream):
             "type": "object",
             "additionalProperties": True,
             "properties": {
+                "inputs": {
+                    "type": ["array", "null"],
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "uuid": {"type": ["string", "null"]},
+                            "occurredAt": {"type": ["string", "null"], "format": "date-time"},
+                            "eventName": {"type": ["string", "null"]},
+                            "email": {"type": ["string", "null"]},
+                            "objectId": {"type": ["string", "null"]},
+                            "properties": {"type": ["object", "null"]},
+                        },
+                    },
+                },
                 "uuid": {"type": ["string", "null"]},
                 "occurredAt": {"type": ["string", "null"], "format": "date-time"},
-                "eventName": {"type": ["string", "null"]},
-                "email": {"type": ["string", "null"]},
-                "objectId": {"type": ["string", "null"]},
-                "properties": {"type": ["object", "null"]},
             },
         }
 
@@ -234,7 +244,12 @@ class CBX1EventStream(CBX1Stream):
         return None
 
     def request_records(self, context: dict | None) -> Iterable[dict]:
-        """Override to handle keyset pagination response format."""
+        """Yield one record per page — each record is a batch of events.
+
+        Each yielded record contains an 'inputs' array with all events from
+        that page, matching HubSpot's bulk custom events API format.
+        The 'occurredAt' is taken from the last event for replication key tracking.
+        """
         next_page_token = None
         decorated_request = self.request_decorator(self._request)
         finished = False
@@ -248,8 +263,14 @@ class CBX1EventStream(CBX1Stream):
             data = resp.json().get('data', {})
             records = data.get('records', [])
 
-            for record in records:
-                yield record
+            if records:
+                # Yield the whole page as a single batch record
+                last_record = records[-1]
+                yield {
+                    "inputs": records,
+                    "uuid": last_record.get("uuid", ""),
+                    "occurredAt": last_record.get("occurredAt", ""),
+                }
 
             next_page_token = self.get_next_page_token(resp, next_page_token)
             finished = next_page_token is None
