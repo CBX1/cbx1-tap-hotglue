@@ -1,4 +1,18 @@
+import logging
+from typing import Iterable
+
+from singer_sdk import typing as th
+
 from tap_cbx1.client import CBX1Stream
+
+logger = logging.getLogger(__name__)
+
+# Minimal Singer schema used when no ACCOUNT egestion mapping is configured for a tenant.
+# Provides the primary key and replication key so discovery succeeds; sync yields nothing.
+_ACCOUNT_FALLBACK_SCHEMA = th.PropertiesList(
+    th.Property("id", th.StringType),
+    th.Property("updatedAt", th.DateTimeType),
+).to_dict()
 
 
 class ContactStream(CBX1Stream):
@@ -11,10 +25,36 @@ class ContactStream(CBX1Stream):
 
 
 class AccountStream(CBX1Stream):
-    """Account stream with dynamic schema discovery."""
+    """Account stream with dynamic schema discovery.
+
+    Gracefully skips tenants that have no TenantEgestionMapping for ACCOUNT→CRM:
+    - Discovery: falls back to a minimal schema instead of raising RuntimeError
+    - Sync: yields no records if the list endpoint returns a non-2xx response
+    """
     name = "accounts"
     path = "/ACCOUNT"
     target_name = "ACCOUNT"
     primary_keys = ["id"]
     replication_key = "updatedAt"
+
+    def get_schema(self) -> dict:
+        try:
+            return super().get_schema()
+        except RuntimeError:
+            logger.warning(
+                "No ACCOUNT egestion mapping configured for this tenant "
+                "(CRM=%s); using fallback schema — stream will produce no records.",
+                self.config.get("CRMSystem"),
+            )
+            return _ACCOUNT_FALLBACK_SCHEMA
+
+    def request_records(self, context) -> Iterable[dict]:
+        try:
+            yield from super().request_records(context)
+        except Exception as e:
+            logger.warning(
+                "Could not fetch account records for this tenant "
+                "(likely no ACCOUNT egestion mapping configured): %s",
+                e,
+            )
 
