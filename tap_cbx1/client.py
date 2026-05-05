@@ -77,6 +77,8 @@ class CBX1Stream(RESTStream):
         payload = {
             "pageNumber": next_page_token,
             "pageSize": self.page_size,
+            "sortBy": self.replication_key_field,
+            "sortDirection": "DESC",
         }
 
         # Always filter out test records (testMetadata: null means not a test record)
