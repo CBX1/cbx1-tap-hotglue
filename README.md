@@ -24,7 +24,7 @@ This tap uses JWT authentication with CBX1's IDM. The tap will:
 | Variable | Required | Purpose |
 |----------|----------|---------|
 | `BASE_URL` | yes | Base URL of the CBX1 API (e.g. `http://java-backend.api.qa.cbx1.internal/`) |
-| `HOTGLUE_PRINCIPAL_ID` | no | UUID of HotGlue's CBX1 SERVICE_ACCOUNT for the deployment env. When set, the tap excludes records last-modified by HotGlue itself (`updatedBy != <uuid>`) to avoid re-ingesting our own writes. Not tenant-specific. |
+| `HOTGLUE_PRINCIPAL_ID` | no | UUID of HotGlue's CBX1 SERVICE_ACCOUNT for the deployment env. When set, the tap drops records whose `updatedBy` equals this UUID (filtered tap-side, after fetch) to avoid re-ingesting our own writes. Not tenant-specific. The filter is intentionally not pushed to the cbx1 server because `$ne updatedBy` regresses Mongo on tenants where HotGlue is the dominant writer (verified via prod `explain()`). |
 
 ## Streams
 
