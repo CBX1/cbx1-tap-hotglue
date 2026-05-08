@@ -11,7 +11,7 @@ from singer import StateMessage
 from tap_cbx1.auth import TapCBX1Auth
 from tap_cbx1.schema_utils import fetch_schema_from_api
 from datetime import timedelta
-from tap_cbx1.constants import CRM_KEY
+from tap_cbx1.constants import CRM_KEY, HOTGLUE_PRINCIPAL_ID_ENV
 
 _TToken = TypeVar("_TToken")
 
@@ -112,6 +112,10 @@ class CBX1Stream(RESTStream):
         next_page_token = 0
         decorated_request = self.request_decorator(self._request)
         finished = False
+        # Tap-side filter: drop records HotGlue itself last-modified to avoid re-ingesting our own
+        # writes. Pushed-down `$ne updatedBy` regresses Mongo on tenants where HotGlue dominates.
+        hotglue_principal_id = os.getenv(HOTGLUE_PRINCIPAL_ID_ENV)
+        skipped = 0
 
         while not finished:
             prepared_request = self.prepare_request(
@@ -121,10 +125,16 @@ class CBX1Stream(RESTStream):
             resp = decorated_request(prepared_request, context)
             response_content = resp.json().get('data').get('content')
             for content in response_content:
+                if hotglue_principal_id and content.get("updatedBy") == hotglue_principal_id:
+                    skipped += 1
+                    continue
                 yield content
 
             next_page_token = self.get_next_page_token(resp, next_page_token)
             finished = next_page_token is None
+
+        if hotglue_principal_id and skipped:
+            self.logger.info("Skipped %d records last-modified by HotGlue principal", skipped)
 
     def _write_state_message(self) -> None:
         """Write out a STATE message with the latest state."""
@@ -138,7 +148,11 @@ class CBX1Stream(RESTStream):
         singer.write_message(StateMessage(value=tap_state))
 
     def get_replication_key_signpost(self, context: Optional[dict]) -> Optional[Any]:
-        return None
+        # Cap state advancement at "now" so a sync that yields zero records
+        # (e.g., every record in the window was HotGlue-authored and filtered
+        # out tap-side) still moves the bookmark forward instead of replaying
+        # the same window on the next run.
+        return parse("now")
 
     def get_schema(self) -> dict:
         """Get schema dynamically from CBX1 API."""
