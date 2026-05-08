@@ -11,7 +11,7 @@ from singer import StateMessage
 from tap_cbx1.auth import TapCBX1Auth
 from tap_cbx1.schema_utils import fetch_schema_from_api
 from datetime import timedelta
-from tap_cbx1.constants import CRM_KEY
+from tap_cbx1.constants import CRM_KEY, HOTGLUE_PRINCIPAL_ID_ENV
 
 _TToken = TypeVar("_TToken")
 
@@ -88,6 +88,14 @@ class CBX1Stream(RESTStream):
                 "value": None
             }
         }
+
+        # Skip records HotGlue last-modified — env-scoped (not tenant-specific), set via env var like BASE_URL.
+        hotglue_principal_id = os.getenv(HOTGLUE_PRINCIPAL_ID_ENV)
+        if hotglue_principal_id:
+            filters["updatedBy"] = {
+                "type": "NOT_EQUALS",
+                "value": hotglue_principal_id,
+            }
 
         if self.replication_key_field and start_date:
             # Increment start date by 1 millisecond

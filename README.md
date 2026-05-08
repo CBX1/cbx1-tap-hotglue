@@ -19,6 +19,13 @@ This tap uses JWT authentication with CBX1's IDM. The tap will:
 2. Use this JWT token for all API calls
 3. Monitor token expiration and automatically refresh when needed (typically ~30 days)
 
+## Environment Variables
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `BASE_URL` | yes | Base URL of the CBX1 API (e.g. `http://java-backend.api.qa.cbx1.internal/`) |
+| `HOTGLUE_PRINCIPAL_ID` | no | UUID of HotGlue's CBX1 SERVICE_ACCOUNT for the deployment env. When set, the tap excludes records last-modified by HotGlue itself (`updatedBy != <uuid>`) to avoid re-ingesting our own writes. Not tenant-specific. |
+
 ## Streams
 
 Current supported streams are:
