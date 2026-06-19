@@ -6,7 +6,7 @@ from singer_sdk import Tap
 from singer_sdk import typing as th
 
 from tap_cbx1.client import CBX1Stream
-from tap_cbx1.constants import ORG_ID_KEY, CODE_KEY
+from tap_cbx1.constants import ORG_ID_KEY, CODE_KEY, PAGE_SIZE_KEY, DEFAULT_PAGE_SIZE
 from tap_cbx1.streams import AccountStream, ContactStream
 
 STREAM_TYPES = [
@@ -32,7 +32,14 @@ class TapCBX1(Tap):
 
     config_jsonschema = th.PropertiesList(
         th.Property(CODE_KEY, th.StringType, required=True),
-        th.Property(ORG_ID_KEY, th.StringType, required=True)
+        th.Property(ORG_ID_KEY, th.StringType, required=True),
+        th.Property(
+            PAGE_SIZE_KEY,
+            th.IntegerType,
+            required=False,
+            default=DEFAULT_PAGE_SIZE,
+            description="Records per page for keyset pagination (default 500).",
+        ),
     ).to_dict()
 
     def discover_streams(self) -> List[CBX1Stream]:

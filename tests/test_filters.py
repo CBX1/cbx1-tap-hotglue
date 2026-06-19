@@ -1,36 +1,67 @@
-"""Tests for tap-side filtering and keyset (cursor) pagination.
+"""Tests for tap-side filtering and durable keyset (cursor) pagination.
 
-These tests stub the prepared HTTP request and the decorated request
-function so we exercise `request_records` end-to-end without booting
-Singer SDK auth or schema fetches.
+These tests stub the prepared HTTP request and the decorated request function so we
+exercise ``request_records`` end-to-end without booting Singer SDK auth or schema
+fetches.
 
-Pagination uses keyset/cursor paging: the request body carries a `cursor`
-(empty string on the first page) instead of a `pageNumber`, and the backend
-returns the next `data.cursor`. We never compute a `skip = pageNumber *
-pageSize` offset, which on large orgs forces Mongo to walk every skipped
-index entry per page (CM100 timeout / CPU spike).
+Pagination uses keyset/cursor paging: the request body carries a ``cursor`` (empty
+string on the first page) instead of a ``pageNumber``, and the backend returns the
+next ``data.cursor``. We never compute ``skip = pageNumber * pageSize``, which on
+large orgs forces Mongo to walk every skipped index entry per page (CM100 timeout /
+CPU spike).
+
+Forward progress is durable: after each page's records are emitted, the next-page
+cursor and the PINNED window upper bound are persisted to Singer state, so a run that
+ends partway resumes from exactly the unread remainder. The run-to-run ``updatedAt``
+bookmark advances only on confirmed window completion.
 """
 
+import copy
 import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+from pendulum import parse
+
 
 HOTGLUE_UUID = "d6435b86-31f9-470a-97e5-33ed6a5024d5"
+PAGE_SIZE = 10
 
 
-def _stream(*, replication_key=None, start_date=None):
-    """Minimal stream-like object for prepare_request_payload tests."""
+def _cbx1():
     os.environ.setdefault("BASE_URL", "http://example.invalid/")
     from tap_cbx1.client import CBX1Stream
 
+    return CBX1Stream
+
+
+def _rec(updated_by, _id="id", updated_at="2026-01-01T00:00:00.000Z"):
+    return {"id": _id, "updatedBy": updated_by, "updatedAt": updated_at}
+
+
+def _full_page(updated_by, prefix):
+    """A full page (len == PAGE_SIZE) of identically-authored records.
+
+    Non-final pages must be full; a short page is itself a terminal signal.
+    """
+    return [_rec(updated_by, f"{prefix}{i}") for i in range(PAGE_SIZE)]
+
+
+# =====================================================================================
+# prepare_request_payload: keyset cursor, pinned window, no pageNumber
+# =====================================================================================
+
+def _payload_stream(*, replication_key=None, start_date=None, stream_state=None, page_size=PAGE_SIZE):
+    """Minimal stream-like object for prepare_request_payload tests."""
+    CBX1Stream = _cbx1()
     obj = SimpleNamespace()
-    obj.page_size = 10
+    obj.page_size = page_size
     obj.replication_key_field = replication_key
+    obj.stream_state = {} if stream_state is None else stream_state
     obj.get_starting_time = lambda ctx: start_date
-    obj.prepare_request_payload = lambda ctx, tok: CBX1Stream.prepare_request_payload(
-        obj, ctx, tok
-    )
+    obj._resume_state = lambda: CBX1Stream._resume_state(obj)
+    obj.prepare_request_payload = lambda ctx, tok: CBX1Stream.prepare_request_payload(obj, ctx, tok)
     return obj
 
 
@@ -42,142 +73,148 @@ def _filters(stream):
     return _payload(stream)["filters"]
 
 
-# ---- prepare_request_payload: keyset cursor, no pageNumber ----
-
 def test_payload_uses_cursor_not_pagenumber(monkeypatch):
-    """Keyset contract: the body carries a `cursor`, never a `pageNumber`.
-    Pushing a deep skip offset to Mongo (skip = pageNumber * pageSize) walks
-    every skipped index entry per page → CM100 timeout on large orgs."""
+    """Keyset contract: the body carries a `cursor`, never a `pageNumber`."""
     monkeypatch.delenv("HOTGLUE_PRINCIPAL_ID", raising=False)
-    payload = _payload(_stream(), token="")
+    payload = _payload(_payload_stream(), token="")
     assert "pageNumber" not in payload
     assert "cursor" in payload
 
 
 def test_payload_cursor_empty_string_on_first_page(monkeypatch):
-    """First page: a None token (Singer SDK's initial value) maps to the empty
-    string, which signals keyset mode to the backend."""
+    """First page: a None token (the seed) maps to the empty string, which signals
+    keyset mode to the backend."""
     monkeypatch.delenv("HOTGLUE_PRINCIPAL_ID", raising=False)
-    assert _payload(_stream(), token=None)["cursor"] == ""
-    # The tap also seeds the first page with the literal empty string.
-    assert _payload(_stream(), token="")["cursor"] == ""
+    assert _payload(_payload_stream(), token=None)["cursor"] == ""
+    assert _payload(_payload_stream(), token="")["cursor"] == ""
 
 
 def test_payload_echoes_backend_cursor_token(monkeypatch):
     """Subsequent pages: the opaque backend token is sent back verbatim."""
     monkeypatch.delenv("HOTGLUE_PRINCIPAL_ID", raising=False)
     token = "eyJ1cGRhdGVkQXQiOiIyMDI2LTAxLTAxIiwiaWQiOiJhYmMifQ=="
-    assert _payload(_stream(), token=token)["cursor"] == token
+    assert _payload(_payload_stream(), token=token)["cursor"] == token
 
 
 def test_payload_keeps_sort_and_page_size(monkeypatch):
-    """sortBy/sortDirection/pageSize are unchanged by the cursor migration."""
     monkeypatch.delenv("HOTGLUE_PRINCIPAL_ID", raising=False)
-    payload = _payload(_stream(replication_key="updatedAt"), token="")
-    assert payload["pageSize"] == 10
+    payload = _payload(_payload_stream(replication_key="updatedAt"), token="")
+    assert payload["pageSize"] == PAGE_SIZE
     assert payload["sortBy"] == "updatedAt"
     assert payload["sortDirection"] == "DESC"
 
 
-# ---- prepare_request_payload: server-side filter must be absent ----
-
 def test_payload_does_not_push_updatedby_filter_server_side(monkeypatch):
-    """Even with the env var set, the request payload must NOT carry an
-    updatedBy filter — pushing $ne updatedBy to Mongo regresses tenants
-    where HotGlue is the dominant writer (verified via prod explain)."""
+    """Pushing $ne updatedBy to Mongo regresses tenants where HotGlue dominates."""
     monkeypatch.setenv("HOTGLUE_PRINCIPAL_ID", HOTGLUE_UUID)
-    assert "updatedBy" not in _filters(_stream())
+    assert "updatedBy" not in _filters(_payload_stream())
 
 
 def test_test_metadata_filter_always_present(monkeypatch):
     monkeypatch.delenv("HOTGLUE_PRINCIPAL_ID", raising=False)
-    assert _filters(_stream())["testMetadata"] == {"type": "EQUALS", "value": None}
+    assert _filters(_payload_stream())["testMetadata"] == {"type": "EQUALS", "value": None}
 
 
 def test_payload_includes_replication_key_when_set(monkeypatch):
-    from pendulum import parse
-
     monkeypatch.setenv("HOTGLUE_PRINCIPAL_ID", HOTGLUE_UUID)
-    stream = _stream(replication_key="updatedAt", start_date=parse("2026-01-01T00:00:00Z"))
+    stream = _payload_stream(replication_key="updatedAt", start_date=parse("2026-01-01T00:00:00Z"))
     filters = _filters(stream)
     assert filters["updatedAt"]["type"] == "BETWEEN"
     assert "updatedBy" not in filters
 
 
-# ---- request_records: tap-side filter ----
+def test_payload_pins_window_end_from_saved_state(monkeypatch):
+    """On a resume run the BETWEEN endValue is the PINNED window_end from state, not
+    a fresh now() — otherwise a DESC scan would skip records that arrived between
+    runs."""
+    monkeypatch.delenv("HOTGLUE_PRINCIPAL_ID", raising=False)
+    saved_window_end = "2026-06-10T12:00:00.000000Z"
+    stream = _payload_stream(
+        replication_key="updatedAt",
+        start_date=parse("2026-06-01T00:00:00Z"),
+        stream_state={"cursor": "c2", "window_end": saved_window_end},
+    )
+    assert _filters(stream)["updatedAt"]["endValue"] == saved_window_end
 
-PAGE_SIZE = 10
+
+# =====================================================================================
+# page_size config knob
+# =====================================================================================
+
+def test_page_size_default_override_and_invalid():
+    CBX1Stream = _cbx1()
+    assert CBX1Stream.page_size.fget(SimpleNamespace(config={})) == 500
+    assert CBX1Stream.page_size.fget(SimpleNamespace(config={"page_size": 250})) == 250
+    # An invalid value falls back to the default rather than crashing the run.
+    assert CBX1Stream.page_size.fget(SimpleNamespace(config={"page_size": "nope"})) == 500
 
 
-def _mock_response(records, *, cursor=None, last=None):
-    """Build a mocked response in the backend's keyset DTO shape.
+# =====================================================================================
+# request_records driver harness
+# =====================================================================================
 
-    `cursor` is the opaque next-page token (None/"" ⇒ no further page).
-    `last` is the backend's terminal boolean; defaults to None (absent).
+def _run_stream(pages=None, *, transport=None, stream_state=None, replication_key="updatedAt",
+                start_date=None, page_size=PAGE_SIZE, max_iterations=50):
+    """Drive the REAL request_records over a mocked transport.
+
+    Provides a live ``stream_state`` dict, captures every STATE emission as a deep
+    snapshot in ``obj.states``, records each sent body cursor in ``obj.sent_cursors``,
+    and keeps the last request body in ``obj.last_body``. Pages are dicts:
+    ``{"records": [...], "cursor": <token-or-None>, "last": <bool-or-None>}``.
     """
-    resp = MagicMock()
-    resp.json.return_value = {
-        "data": {
-            "content": records,
-            "size": PAGE_SIZE,
-            "last": last,
-            "cursor": cursor,
-            "numberOfElements": len(records),
-            "empty": len(records) == 0,
-        }
-    }
-    return resp
-
-
-def _stream_with_pages(pages):
-    """Build a stream-like object whose `request_records` walks the given list
-    of page dicts. Each entry is ``{"records": [...], "cursor": <token-or-None>,
-    "last": <bool-or-None>}``.
-
-    The transport returns each page in order; pagination terminates via the
-    real `get_next_page_token` (last / missing-cursor / short-page).
-    """
-    os.environ.setdefault("BASE_URL", "http://example.invalid/")
-    from tap_cbx1.client import CBX1Stream
-
+    CBX1Stream = _cbx1()
     obj = SimpleNamespace()
     obj.logger = MagicMock()
-    obj.page_size = PAGE_SIZE
-    obj.prepare_request = lambda context, next_page_token: f"req-{next_page_token}"
+    obj.page_size = page_size
+    obj.replication_key = replication_key
+    obj.replication_key_field = "updatedAt"
+    obj.stream_state = {} if stream_state is None else stream_state
+    obj.get_starting_time = lambda ctx: start_date
+    obj.states = []
+    obj.sent_cursors = []
+    obj.last_body = None
+
+    def _prepare(context, next_page_token):
+        body = CBX1Stream.prepare_request_payload(obj, context, next_page_token)
+        obj.sent_cursors.append(body["cursor"])
+        obj.last_body = body
+        return f"req-{next_page_token}"
+
+    obj.prepare_request = _prepare
     obj.request_decorator = lambda fn: fn
+    obj._write_state_message = lambda: obj.states.append(copy.deepcopy(obj.stream_state))
 
-    iterator = iter(pages)
+    if transport is not None:
+        obj._request = transport
+    else:
+        calls = {"n": 0}
 
-    def _next_response(*_args, **_kwargs):
-        try:
-            page = next(iterator)
-        except StopIteration:
-            # Safety net: should not be reached. Emit a terminal empty page.
-            return _mock_response([], cursor=None, last=True)
-        return _mock_response(
-            page["records"], cursor=page.get("cursor"), last=page.get("last")
-        )
+        def _t(*_a, **_k):
+            i = calls["n"]
+            calls["n"] += 1
+            if calls["n"] > max_iterations:
+                raise AssertionError("pagination did not terminate (runaway loop)")
+            page = pages[i] if i < len(pages) else pages[-1]
+            resp = MagicMock()
+            resp.json.return_value = {
+                "data": {
+                    "content": page["records"],
+                    "cursor": page.get("cursor"),
+                    "last": page.get("last"),
+                    "size": page_size,
+                }
+            }
+            return resp
 
-    obj._request = _next_response
-    obj.get_next_page_token = lambda resp, prev: (
-        CBX1Stream.get_next_page_token(obj, resp, prev)
-    )
+        obj._request = _t
+
+    obj.get_next_page_token = lambda resp, prev: CBX1Stream.get_next_page_token(obj, resp, prev)
+    obj._resume_state = lambda: CBX1Stream._resume_state(obj)
     obj.request_records = lambda context: CBX1Stream.request_records(obj, context)
     return obj
 
 
-def _rec(updated_by, _id="id"):
-    return {"id": _id, "updatedBy": updated_by, "updatedAt": "2026-01-01T00:00:00.000Z"}
-
-
-def _full_page(updated_by, prefix):
-    """A full page (len == PAGE_SIZE) of identically-authored records.
-
-    Non-final pages must be full; a short page is itself a terminal signal,
-    so intermediate pages carry PAGE_SIZE records.
-    """
-    return [_rec(updated_by, f"{prefix}{i}") for i in range(PAGE_SIZE)]
-
+# ---- tap-side HotGlue filter ----
 
 def test_request_records_skips_hotglue_authored(monkeypatch):
     monkeypatch.setenv("HOTGLUE_PRINCIPAL_ID", HOTGLUE_UUID)
@@ -185,7 +222,7 @@ def test_request_records_skips_hotglue_authored(monkeypatch):
         {"records": [_rec(HOTGLUE_UUID, "a"), _rec("other", "b"), _rec(HOTGLUE_UUID, "c")],
          "cursor": None, "last": True},
     ]
-    out = list(_stream_with_pages(pages).request_records(context=None))
+    out = list(_run_stream(pages).request_records(context=None))
     assert [r["id"] for r in out] == ["b"]
 
 
@@ -194,67 +231,163 @@ def test_request_records_passthrough_when_env_unset(monkeypatch):
     pages = [
         {"records": [_rec(HOTGLUE_UUID, "a"), _rec("other", "b")], "cursor": None, "last": True},
     ]
-    out = list(_stream_with_pages(pages).request_records(context=None))
+    out = list(_run_stream(pages).request_records(context=None))
     assert [r["id"] for r in out] == ["a", "b"]
 
 
 def test_pagination_continues_across_all_filtered_page(monkeypatch):
-    """Critical: a page where every record is HotGlue must NOT stop pagination.
-    The next page is fetched (via cursor) regardless of how many records
-    survived the tap-side filter."""
+    """A page where every record is HotGlue must NOT stop pagination — the cursor
+    drives the next fetch regardless of how many records survived the filter."""
     monkeypatch.setenv("HOTGLUE_PRINCIPAL_ID", HOTGLUE_UUID)
     pages = [
-        # page 0: ALL records are HotGlue — yields nothing (full page, has cursor)
         {"records": _full_page(HOTGLUE_UUID, "a"), "cursor": "c1", "last": False},
-        # page 1: also all HotGlue (full page, has cursor)
         {"records": _full_page(HOTGLUE_UUID, "d"), "cursor": "c2", "last": False},
-        # page 2: finally a non-HotGlue record (short/last page)
         {"records": [_rec(HOTGLUE_UUID, "f"), _rec("other", "survivor")], "cursor": None, "last": True},
     ]
-    out = list(_stream_with_pages(pages).request_records(context=None))
+    out = list(_run_stream(pages).request_records(context=None))
     assert [r["id"] for r in out] == ["survivor"]
 
 
-def test_pagination_terminates_when_all_pages_filtered(monkeypatch):
-    """Worst case: every page is all-HotGlue. Must yield nothing and terminate
-    cleanly (no infinite loop, no exception)."""
-    monkeypatch.setenv("HOTGLUE_PRINCIPAL_ID", HOTGLUE_UUID)
-    pages = [
-        {"records": _full_page(HOTGLUE_UUID, "a"), "cursor": "c1", "last": False},
-        {"records": [_rec(HOTGLUE_UUID, "b")], "cursor": None, "last": True},  # short final page
-    ]
-    out = list(_stream_with_pages(pages).request_records(context=None))
-    assert out == []
-
-
 def test_pagination_handles_empty_response_page(monkeypatch):
-    """A single short page must terminate the loop cleanly (last-page case)."""
     monkeypatch.setenv("HOTGLUE_PRINCIPAL_ID", HOTGLUE_UUID)
-    pages = [
-        {"records": [_rec("other", "a")], "cursor": None, "last": True},
-    ]
-    out = list(_stream_with_pages(pages).request_records(context=None))
+    pages = [{"records": [_rec("other", "a")], "cursor": None, "last": True}]
+    out = list(_run_stream(pages).request_records(context=None))
     assert [r["id"] for r in out] == ["a"]
 
 
 def test_request_records_handles_missing_updatedby_field(monkeypatch):
-    """Records with no updatedBy stamp (e.g., legacy data) must pass through —
-    `None != hotglue_uuid` is the correct semantic."""
     monkeypatch.setenv("HOTGLUE_PRINCIPAL_ID", HOTGLUE_UUID)
     pages = [
         {"records": [_rec(None, "legacy"), _rec(HOTGLUE_UUID, "skip"), _rec("other", "keep")],
          "cursor": None, "last": True},
     ]
-    out = list(_stream_with_pages(pages).request_records(context=None))
+    out = list(_run_stream(pages).request_records(context=None))
     assert [r["id"] for r in out] == ["legacy", "keep"]
 
 
-# ---- get_next_page_token: keyset termination contract ----
+def test_request_records_handles_missing_data_key(monkeypatch):
+    """Defensive parse: a response with no `data` key must not raise (Mycroft #3)."""
+    monkeypatch.delenv("HOTGLUE_PRINCIPAL_ID", raising=False)
+
+    def transport(*_a, **_k):
+        resp = MagicMock()
+        resp.json.return_value = {}  # no 'data'
+        return resp
+
+    out = list(_run_stream(transport=transport).request_records(context=None))
+    assert out == []
+
+
+# =====================================================================================
+# durable forward progress: mid-run failure, resume, completion
+# =====================================================================================
+
+def test_mid_run_failure_persists_resume_cursor(monkeypatch):
+    """Acceptance: transport raises while fetching page k -> pages < k are emitted, a
+    STATE carrying the page-k cursor + pinned window is persisted, and the run-to-run
+    watermark is NOT advanced (no false progress)."""
+    from singer_sdk.exceptions import RetriableAPIError
+
+    monkeypatch.delenv("HOTGLUE_PRINCIPAL_ID", raising=False)
+    calls = {"n": 0}
+    p0 = {"records": [_rec("other", f"p0-{i}") for i in range(PAGE_SIZE)], "cursor": "c1", "last": False}
+    p1 = {"records": [_rec("other", f"p1-{i}") for i in range(PAGE_SIZE)], "cursor": "c2", "last": False}
+
+    def transport(*_a, **_k):
+        i = calls["n"]
+        calls["n"] += 1
+        if i == 0:
+            page = p0
+        elif i == 1:
+            page = p1
+        else:
+            raise RetriableAPIError("transport boom fetching page 2")
+        resp = MagicMock()
+        resp.json.return_value = {"data": {"content": page["records"], "cursor": page["cursor"],
+                                           "last": page["last"], "size": PAGE_SIZE}}
+        return resp
+
+    obj = _run_stream(transport=transport, stream_state={}, start_date=parse("2026-01-01T00:00:00Z"))
+    out = []
+    with pytest.raises(RetriableAPIError):
+        for r in obj.request_records(context=None):
+            out.append(r)
+
+    assert [r["id"] for r in out] == (
+        [f"p0-{i}" for i in range(PAGE_SIZE)] + [f"p1-{i}" for i in range(PAGE_SIZE)]
+    )
+    # Resume point persisted: cursor for the unread page 2 + a pinned window_end.
+    assert obj.stream_state["cursor"] == "c2"
+    assert "window_end" in obj.stream_state
+    # The run-to-run bookmark must NOT have advanced (partial run).
+    assert "replication_key_value" not in obj.stream_state
+
+
+def test_resume_reads_only_remainder_against_pinned_window(monkeypatch):
+    """Acceptance: a resume run seeds the saved cursor, reuses the PINNED window
+    (not a fresh now()), emits only the remainder, and on completion advances the
+    watermark to the pinned window and clears the cursor."""
+    monkeypatch.delenv("HOTGLUE_PRINCIPAL_ID", raising=False)
+    saved_window_end = "2026-06-10T12:00:00.000000Z"
+    state = {
+        "cursor": "c2",
+        "window_end": saved_window_end,
+        "replication_key": "updatedAt",
+        "replication_key_value": "2026-06-01T00:00:00.000000Z",
+    }
+    pages = [{"records": [_rec("other", f"p2-{i}") for i in range(3)], "cursor": None, "last": True}]
+    obj = _run_stream(pages, stream_state=state, start_date=parse("2026-06-01T00:00:00Z"))
+
+    out = list(obj.request_records(context=None))
+    assert [r["id"] for r in out] == [f"p2-{i}" for i in range(3)]
+    # Resumed from the saved cursor, not "".
+    assert obj.sent_cursors[0] == "c2"
+    # Used the pinned window_end as the upper bound (no skip of between-run arrivals).
+    assert obj.last_body["filters"]["updatedAt"]["endValue"] == saved_window_end
+    # Completion advanced the watermark to the pinned window_end and cleared resume state.
+    assert obj.stream_state["replication_key_value"] == saved_window_end
+    assert obj.stream_state["replication_key"] == "updatedAt"
+    assert "cursor" not in obj.stream_state
+    assert "window_end" not in obj.stream_state
+
+
+def test_completion_advances_watermark_to_pinned_window(monkeypatch):
+    """Acceptance: on full window completion the watermark advances to the pinned
+    window upper bound (== the endValue actually sent) and the cursor is cleared."""
+    monkeypatch.delenv("HOTGLUE_PRINCIPAL_ID", raising=False)
+    pages = [
+        {"records": [_rec("other", f"p0-{i}") for i in range(PAGE_SIZE)], "cursor": "c1", "last": False},
+        {"records": [_rec("other", "last")], "cursor": None, "last": True},
+    ]
+    obj = _run_stream(pages, stream_state={}, start_date=parse("2026-01-01T00:00:00Z"))
+
+    out = list(obj.request_records(context=None))
+    assert len(out) == PAGE_SIZE + 1
+    assert obj.stream_state.get("cursor") is None
+    assert obj.stream_state.get("window_end") is None
+    assert obj.stream_state["replication_key"] == "updatedAt"
+    # The committed watermark equals the pinned upper bound used for the BETWEEN filter.
+    assert obj.stream_state["replication_key_value"] == obj.last_body["filters"]["updatedAt"]["endValue"]
+
+
+def test_zero_record_window_still_advances_watermark(monkeypatch):
+    """A window that yields no records (empty first page, last=true) still advances
+    the bookmark — completion, not record count, drives advancement."""
+    monkeypatch.delenv("HOTGLUE_PRINCIPAL_ID", raising=False)
+    pages = [{"records": [], "cursor": None, "last": True}]
+    obj = _run_stream(pages, stream_state={}, start_date=parse("2026-01-01T00:00:00Z"))
+
+    out = list(obj.request_records(context=None))
+    assert out == []
+    assert obj.stream_state["replication_key_value"] == obj.last_body["filters"]["updatedAt"]["endValue"]
+
+
+# =====================================================================================
+# get_next_page_token: completion vs loud-failure contract (Mycroft #1)
+# =====================================================================================
 
 def _token_for(page_data):
-    """Call the real CBX1Stream.get_next_page_token against a raw `data` dict."""
-    from tap_cbx1.client import CBX1Stream
-
+    CBX1Stream = _cbx1()
     obj = SimpleNamespace()
     obj.page_size = PAGE_SIZE
     resp = MagicMock()
@@ -263,211 +396,162 @@ def _token_for(page_data):
 
 
 def test_next_page_token_returns_cursor_on_full_non_last_page():
-    """Happy path: full page, last=False, cursor present → return the cursor."""
-    page = {
-        "content": [_rec("other", f"x{i}") for i in range(PAGE_SIZE)],
-        "last": False,
-        "cursor": "next-token-abc",
-    }
-    assert _token_for(page) == "next-token-abc"
+    page = {"content": [_rec("other", f"x{i}") for i in range(PAGE_SIZE)], "last": False, "cursor": "next-abc"}
+    assert _token_for(page) == "next-abc"
 
 
 def test_next_page_token_terminates_on_last_true():
-    """`last: True` terminates even when a cursor is still present and the page
-    is full (termination comes from `last`, not the short-page check)."""
-    page = {
-        "content": [_rec("other", f"x{i}") for i in range(PAGE_SIZE)],
-        "last": True,
-        "cursor": "would-be-next",  # ignored: `last` wins
-    }
+    page = {"content": [_rec("other", f"x{i}") for i in range(PAGE_SIZE)], "last": True, "cursor": "ignored"}
     assert _token_for(page) is None
 
 
-def test_next_page_token_terminates_when_cursor_missing():
-    """No `cursor` key (or a non-keyset / older backend) terminates."""
-    page = {
-        "content": [_rec("other", f"x{i}") for i in range(PAGE_SIZE)],
-        "last": False,
-        # cursor intentionally absent
-    }
+def test_next_page_token_terminates_on_short_page_without_cursor():
+    page = {"content": [_rec("other", "a")], "last": False}  # short, no cursor -> clean end
     assert _token_for(page) is None
 
 
-def test_next_page_token_terminates_when_cursor_empty():
-    """An empty-string cursor means the backend has no more pages."""
-    page = {
-        "content": [_rec("other", f"x{i}") for i in range(PAGE_SIZE)],
-        "last": False,
-        "cursor": "",
-    }
-    assert _token_for(page) is None
-
-
-def test_next_page_token_terminates_on_short_page():
-    """A short page (len < page_size) is a terminal signal even if a cursor is
-    present."""
-    page = {
-        "content": [_rec("other", f"x{i}") for i in range(3)],  # 3 < PAGE_SIZE
-        "last": False,
-        "cursor": "still-here",
-    }
+def test_next_page_token_terminates_on_short_page_with_cursor():
+    page = {"content": [_rec("other", "a")], "last": False, "cursor": "still-here"}
     assert _token_for(page) is None
 
 
 def test_next_page_token_terminates_on_empty_page():
-    page = {"content": [], "last": False, "cursor": "x"}
-    assert _token_for(page) is None
+    assert _token_for({"content": [], "last": False}) is None
 
 
-# ---- CROSS-REPO CONTRACT / E2E: tap <-> backend handshake ----
-
-def _page_json(records, *, cursor, last):
-    """Emit one page in the EXACT backend keyset JSON shape.
-
-    `cursor` is the opaque next-page token the backend returns; the tap echoes
-    it back as the body `cursor` on the following request. `last` is the
-    backend's terminal boolean.
-    """
-    return {
-        "data": {
-            "content": records,
-            "size": PAGE_SIZE,
-            "last": last,
-            "cursor": cursor,
-            "numberOfElements": len(records),
-            "empty": len(records) == 0,
-        }
-    }
+def test_next_page_token_raises_on_full_page_without_cursor():
+    """The data-loss guard (Mycroft #1): a FULL page that is not flagged `last` and
+    carries no cursor cannot be advanced safely. Rather than terminate silently
+    (which would let the bookmark jump to ~now and drop the unread tail — the
+    signature of an older/non-keyset backend), fail loudly."""
+    page = {"content": [_rec("other", f"x{i}") for i in range(PAGE_SIZE)], "last": False}  # no cursor
+    with pytest.raises(RuntimeError):
+        _token_for(page)
 
 
-def _e2e_stream(page_jsons, *, max_iterations=50):
-    """Drive the REAL request_records over a mocked transport that returns the
-    given sequence of raw page JSON dicts AND asserts the tap echoes each
-    backend cursor back on the next request body. We do NOT bypass
-    get_next_page_token or prepare_request_payload. Iteration is capped to fail
-    loudly on a runaway loop instead of hanging.
-    """
-    os.environ.setdefault("BASE_URL", "http://example.invalid/")
-    from tap_cbx1.client import CBX1Stream
+def test_request_records_raises_on_incompatible_backend_without_advancing(monkeypatch):
+    """End-to-end of the guard: a full page + no cursor + not last makes the run fail
+    loudly, emits NO records for that page, and does NOT advance the watermark."""
+    monkeypatch.delenv("HOTGLUE_PRINCIPAL_ID", raising=False)
+    pages = [{"records": _full_page("other", "p0"), "cursor": None, "last": None}]
+    obj = _run_stream(pages, stream_state={}, start_date=parse("2026-01-01T00:00:00Z"))
 
+    out = []
+    with pytest.raises(RuntimeError):
+        for r in obj.request_records(context=None):
+            out.append(r)
+    assert out == []  # anomaly detected before emitting
+    assert "replication_key_value" not in obj.stream_state
+
+
+# =====================================================================================
+# signpost: now manual (no SDK signpost)
+# =====================================================================================
+
+def test_replication_key_signpost_is_none():
+    """Watermark advancement is manual now (see _increment_stream_state). The SDK
+    signpost is therefore intentionally None."""
+    CBX1Stream = _cbx1()
+    assert CBX1Stream.get_replication_key_signpost(SimpleNamespace(), context=None) is None
+
+
+def test_increment_stream_state_is_noop():
+    """The SDK's ascending high-watermark is disabled; advancement is manual."""
+    CBX1Stream = _cbx1()
     obj = SimpleNamespace()
-    obj.logger = MagicMock()
-    obj.page_size = PAGE_SIZE
-    obj.replication_key_field = "updatedAt"
-    obj.get_starting_time = lambda ctx: None
-
-    state = {"calls": 0, "sent_cursors": []}
-
-    # Build the real request body each call and record the cursor the tap sent,
-    # so the E2E test asserts the full handshake (backend cursor → next body).
-    def _prepare_request(context, next_page_token):
-        body = CBX1Stream.prepare_request_payload(obj, context, next_page_token)
-        state["sent_cursors"].append(body["cursor"])
-        assert "pageNumber" not in body
-        return f"req-{next_page_token}"
-
-    obj.prepare_request = _prepare_request
-    obj.request_decorator = lambda fn: fn
-
-    def _transport(*_args, **_kwargs):
-        idx = state["calls"]
-        state["calls"] += 1
-        if state["calls"] > max_iterations:
-            raise AssertionError("pagination did not terminate (runaway loop)")
-        payload = page_jsons[idx] if idx < len(page_jsons) else page_jsons[-1]
-        resp = MagicMock()
-        resp.json.return_value = payload
-        return resp
-
-    obj._request = _transport
-    obj.get_next_page_token = lambda resp, prev: CBX1Stream.get_next_page_token(
-        obj, resp, prev
-    )
-    obj.request_records = lambda context: CBX1Stream.request_records(obj, context)
-    return obj, state
+    # Must not raise and must not touch any state.
+    assert CBX1Stream._increment_stream_state(obj, {"updatedAt": "2026-01-01T00:00:00Z"}) is None
 
 
-def _three_page_sequence():
-    """3 pages, 10 + 10 + 4 = 24 records; final page short with `last: True`.
-
-    Each non-final page hands the tap an opaque cursor; the final page returns
-    no cursor.
-    """
-    p0 = _page_json([_rec("other", f"p0-{i}") for i in range(PAGE_SIZE)], cursor="cur-1", last=False)
-    p1 = _page_json([_rec("other", f"p1-{i}") for i in range(PAGE_SIZE)], cursor="cur-2", last=False)
-    p2 = _page_json([_rec("other", f"p2-{i}") for i in range(4)], cursor=None, last=True)
-    return [p0, p1, p2]
-
+# =====================================================================================
+# CROSS-REPO CONTRACT / E2E handshake
+# =====================================================================================
 
 def test_e2e_contract_keyset_handshake(monkeypatch):
-    """Full handshake: the tap seeds an empty cursor, echoes each backend
-    cursor back on the next request, yields ALL 24 records, and terminates."""
+    """Full handshake: seed an empty cursor, echo each backend cursor back on the
+    next request, yield ALL 24 records, terminate in exactly 3 fetches, and persist
+    a cursor at each page boundary."""
     monkeypatch.delenv("HOTGLUE_PRINCIPAL_ID", raising=False)
-    pages = _three_page_sequence()
-    # Sanity: this fixture is the keyset shape (cursor present, no totals).
-    assert pages[0]["data"]["cursor"] == "cur-1"
-    assert "totalPages" not in pages[0]["data"]
+    pages = [
+        {"records": [_rec("other", f"p0-{i}") for i in range(PAGE_SIZE)], "cursor": "cur-1", "last": False},
+        {"records": [_rec("other", f"p1-{i}") for i in range(PAGE_SIZE)], "cursor": "cur-2", "last": False},
+        {"records": [_rec("other", f"p2-{i}") for i in range(4)], "cursor": None, "last": True},
+    ]
+    obj = _run_stream(pages, stream_state={}, start_date=parse("2026-01-01T00:00:00Z"))
+    out = list(obj.request_records(context=None))
 
-    stream, state = _e2e_stream(pages)
-    out = list(stream.request_records(context=None))
     assert [r["id"] for r in out] == (
         [f"p0-{i}" for i in range(PAGE_SIZE)]
         + [f"p1-{i}" for i in range(PAGE_SIZE)]
         + [f"p2-{i}" for i in range(4)]
     )
     assert len(out) == 24
-    assert state["calls"] == 3  # exactly 3 fetches, no trailing probe
-    # The handshake: first request seeds "", then each backend cursor is echoed.
-    assert state["sent_cursors"] == ["", "cur-1", "cur-2"]
-
-
-def test_e2e_contract_missing_cursor_terminates(monkeypatch):
-    """A non-keyset / older backend that returns no `cursor` (and no `last`)
-    must terminate after the first page rather than loop forever."""
-    monkeypatch.delenv("HOTGLUE_PRINCIPAL_ID", raising=False)
-    # Full page, last absent, cursor absent → terminate (no next token).
-    p0 = {
-        "data": {
-            "content": [_rec("other", f"p0-{i}") for i in range(PAGE_SIZE)],
-            "size": PAGE_SIZE,
-            # no `last`, no `cursor`
-        }
-    }
-    stream, state = _e2e_stream([p0])
-    out = list(stream.request_records(context=None))
-    assert len(out) == PAGE_SIZE
-    assert state["calls"] == 1  # terminates immediately, no runaway
-    assert state["sent_cursors"] == [""]
+    assert obj.sent_cursors == ["", "cur-1", "cur-2"]
+    # Intermediate STATE snapshots carried the resume cursor; final cleared it.
+    assert obj.states[0]["cursor"] == "cur-1"
+    assert "cursor" not in obj.states[-1]
 
 
 def test_e2e_contract_full_final_page_with_last_true(monkeypatch):
-    """Edge: the final page is FULL (len == page_size) but carries `last: True`.
-    Termination must come from `last`, not the short-page check."""
+    """Edge: a FULL final page (len == page_size) terminates via `last`, not the
+    short-page check."""
     monkeypatch.delenv("HOTGLUE_PRINCIPAL_ID", raising=False)
-    p0 = _page_json([_rec("other", f"p0-{i}") for i in range(PAGE_SIZE)], cursor="cur-1", last=False)
-    p1 = _page_json([_rec("other", f"p1-{i}") for i in range(PAGE_SIZE)], cursor="cur-2", last=True)
-    assert p1["data"]["last"] is True and len(p1["data"]["content"]) == PAGE_SIZE
-
-    stream, state = _e2e_stream([p0, p1])
-    out = list(stream.request_records(context=None))
+    pages = [
+        {"records": [_rec("other", f"p0-{i}") for i in range(PAGE_SIZE)], "cursor": "cur-1", "last": False},
+        {"records": [_rec("other", f"p1-{i}") for i in range(PAGE_SIZE)], "cursor": "cur-2", "last": True},
+    ]
+    obj = _run_stream(pages, stream_state={}, start_date=parse("2026-01-01T00:00:00Z"))
+    out = list(obj.request_records(context=None))
     assert len(out) == 2 * PAGE_SIZE
-    assert state["calls"] == 2  # full final page still stops via `last`
-    assert state["sent_cursors"] == ["", "cur-1"]
+    assert obj.sent_cursors == ["", "cur-1"]
 
 
-# ---- bookmark signpost ----
+# =====================================================================================
+# AccountStream: narrow the exception catch (Mycroft #2)
+# =====================================================================================
 
-def test_replication_key_signpost_returns_now_not_none():
-    """When 0 records are yielded (e.g., all-HotGlue tenant), state must still
-    advance. Singer SDK caps state at the signpost; returning a fresh "now"
-    moves the bookmark forward even when nothing yielded."""
-    from datetime import datetime, timezone
+def _account_super_raises(monkeypatch, exc):
+    """Patch the parent CBX1Stream.request_records to raise `exc`, so AccountStream's
+    `yield from super().request_records(...)` triggers its except handler."""
+    import tap_cbx1.client as client_mod
 
-    from tap_cbx1.client import CBX1Stream
+    def raising(self, context):
+        raise exc
+        yield  # pragma: no cover - makes this a generator
 
-    obj = SimpleNamespace()
-    signpost = CBX1Stream.get_replication_key_signpost(obj, context=None)
-    assert signpost is not None
-    # pendulum DateTime is a subclass of datetime; should be tz-aware and "now-ish".
-    delta = abs((datetime.now(timezone.utc) - signpost).total_seconds())
-    assert delta < 5
+    monkeypatch.setattr(client_mod.CBX1Stream, "request_records", raising)
+
+
+def test_account_stream_swallows_fatal_api_error(monkeypatch):
+    """A missing ACCOUNT mapping surfaces as a 4xx -> FatalAPIError -> swallowed
+    (yield nothing) rather than failing the run."""
+    from singer_sdk.exceptions import FatalAPIError
+    from tap_cbx1.streams import AccountStream
+
+    _account_super_raises(monkeypatch, FatalAPIError("400 Client Error: mapping not found"))
+    inst = object.__new__(AccountStream)
+    out = list(AccountStream.request_records(inst, context=None))
+    assert out == []
+
+
+def test_account_stream_propagates_retriable_error(monkeypatch):
+    """A transient failure (5xx/timeout -> RetriableAPIError) must NOT be swallowed —
+    swallowing it would record false success and drop records."""
+    from singer_sdk.exceptions import RetriableAPIError
+    from tap_cbx1.streams import AccountStream
+
+    _account_super_raises(monkeypatch, RetriableAPIError("503 Service Unavailable"))
+    inst = object.__new__(AccountStream)
+    with pytest.raises(RetriableAPIError):
+        list(AccountStream.request_records(inst, context=None))
+
+
+def test_account_stream_propagates_keyset_anomaly(monkeypatch):
+    """The incompatible-backend RuntimeError guard must also propagate through the
+    account stream (no silent swallow)."""
+    from tap_cbx1.streams import AccountStream
+
+    _account_super_raises(monkeypatch, RuntimeError("full page, no cursor, not last"))
+    inst = object.__new__(AccountStream)
+    with pytest.raises(RuntimeError):
+        list(AccountStream.request_records(inst, context=None))

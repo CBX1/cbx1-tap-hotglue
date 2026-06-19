@@ -2,6 +2,7 @@ import logging
 from typing import Iterable
 
 from singer_sdk import typing as th
+from singer_sdk.exceptions import FatalAPIError
 
 from tap_cbx1.client import CBX1Stream
 
@@ -51,10 +52,18 @@ class AccountStream(CBX1Stream):
     def request_records(self, context) -> Iterable[dict]:
         try:
             yield from super().request_records(context)
-        except Exception as e:
+        except FatalAPIError as e:
+            # A missing ACCOUNT egestion mapping makes the list endpoint return a
+            # 4xx, which the SDK surfaces as FatalAPIError. Treat that as "no records
+            # for this tenant" and yield nothing. We deliberately catch ONLY
+            # FatalAPIError (4xx): transient failures (5xx/timeouts -> RetriableAPIError,
+            # connection errors) and the keyset-anomaly RuntimeError are NOT caught and
+            # propagate, so the run fails loudly instead of silently dropping records
+            # and recording false progress.
             logger.warning(
-                "Could not fetch account records for this tenant "
-                "(likely no ACCOUNT egestion mapping configured): %s",
+                "ACCOUNT egestion list returned a client error for this tenant "
+                "(likely no ACCOUNT egestion mapping configured); yielding no "
+                "records: %s",
                 e,
             )
 
