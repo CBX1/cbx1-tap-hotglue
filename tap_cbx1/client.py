@@ -38,38 +38,46 @@ class CBX1Stream(RESTStream):
     def get_next_page_token(
             self, response: requests.Response, previous_token: Optional[Any]
     ) -> Optional[Any]:
-        """Return a token for identifying next page or None if no more pages.
+        """Return the next keyset cursor or None when there are no more pages.
 
-        Terminates on ``data.last`` (a boolean the backend already returns)
-        rather than ``data.totalPages``. Computing ``totalPages`` forces the
-        backend to run a per-page full-partition Mongo ``count()`` which drives
-        the prod primary to ~94% CPU; the count-free backend therefore returns
-        ``null`` for ``totalElements``/``totalPages`` while still sending
-        ``last``. We never do arithmetic on a possibly-null ``totalPages``.
+        Uses keyset (cursor) pagination, NOT page-number/skip pagination.
+
+        WHY: with skip-based paging the backend computes ``skip =
+        pageNumber * pageSize`` and Mongo must walk every one of those skipped
+        index entries on every page request. On a large org the deep pages
+        therefore cost progressively more and pin the prod primary — a
+        ``CM100`` query timeout / CPU spike. The cursor is the backend's opaque
+        ``(updatedAt, id)`` keyset token: each page seeks directly to its
+        starting key, so every page costs the same regardless of how deep into
+        the result set we are. The compound ``id`` tiebreaker is required
+        because Mongo stores ``updatedAt`` at millisecond precision and a bulk
+        write shares a single millisecond across many documents — without the
+        ``id`` component the cursor could skip or repeat records that share an
+        ``updatedAt`` value.
+
+        Termination: the backend says this is the final page (``last`` is
+        True), it returns no further cursor (``cursor`` missing/empty — also
+        the signal from a non-keyset / older backend), or the page is short
+        (``len(content) < page_size``).
         """
-        previous_token = previous_token or 0
         page_data = response.json().get('data') or {}
-        content = page_data.get('content') or []
 
         # Primary signal: the backend says this is the final page.
-        # Works for both the current Page DTO and the future count-free Slice.
         if page_data.get('last') is True:
             return None
 
+        # The opaque keyset cursor for the next page. Missing/empty means the
+        # backend has no more pages (or is a non-keyset / older backend).
+        cursor = page_data.get('cursor')
+        if not cursor:
+            return None
+
         # Defensive: a short or empty page means there is nothing after it.
-        # Handles a backend that omits `last` entirely.
+        content = page_data.get('content') or []
         if len(content) < self.page_size:
             return None
 
-        # Legacy fallback ONLY when `last` is absent: stop on the last page by
-        # index. Never compare when totalPages is None (would TypeError).
-        if page_data.get('last') is None:
-            number = page_data.get('number')
-            total_pages = page_data.get('totalPages')
-            if number is not None and total_pages is not None and number >= total_pages - 1:
-                return None
-
-        return previous_token + 1
+        return cursor
 
     def get_starting_time(self, context):
         start_date = self.config.get("start_date")
@@ -99,8 +107,11 @@ class CBX1Stream(RESTStream):
     ) -> dict | None:
         start_date = self.get_starting_time(context)
 
+        # Keyset pagination: send the opaque cursor, never a pageNumber/skip.
+        # An empty-string cursor on the first page signals keyset mode to the
+        # backend; subsequent pages echo back the token the backend returned.
         payload = {
-            "pageNumber": next_page_token,
+            "cursor": next_page_token if next_page_token is not None else "",
             "pageSize": self.page_size,
             "sortBy": self.replication_key_field,
             "sortDirection": "DESC",
@@ -134,7 +145,8 @@ class CBX1Stream(RESTStream):
         return result
 
     def request_records(self, context: dict | None) -> Iterable[dict]:
-        next_page_token = 0
+        # Empty cursor ⇒ first keyset page (signals keyset mode to the backend).
+        next_page_token = ""
         decorated_request = self.request_decorator(self._request)
         finished = False
         # Tap-side filter: drop records HotGlue itself last-modified to avoid re-ingesting our own
