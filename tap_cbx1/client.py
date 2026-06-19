@@ -38,13 +38,38 @@ class CBX1Stream(RESTStream):
     def get_next_page_token(
             self, response: requests.Response, previous_token: Optional[Any]
     ) -> Optional[Any]:
-        """Return a token for identifying next page or None if no more pages."""
+        """Return a token for identifying next page or None if no more pages.
+
+        Terminates on ``data.last`` (a boolean the backend already returns)
+        rather than ``data.totalPages``. Computing ``totalPages`` forces the
+        backend to run a per-page full-partition Mongo ``count()`` which drives
+        the prod primary to ~94% CPU; the count-free backend therefore returns
+        ``null`` for ``totalElements``/``totalPages`` while still sending
+        ``last``. We never do arithmetic on a possibly-null ``totalPages``.
+        """
         previous_token = previous_token or 0
-        page_data = response.json().get('data')
-        if page_data.get('number') < page_data.get('totalPages'):
-            next_page_token = previous_token + 1
-            return next_page_token
-        return None
+        page_data = response.json().get('data') or {}
+        content = page_data.get('content') or []
+
+        # Primary signal: the backend says this is the final page.
+        # Works for both the current Page DTO and the future count-free Slice.
+        if page_data.get('last') is True:
+            return None
+
+        # Defensive: a short or empty page means there is nothing after it.
+        # Handles a backend that omits `last` entirely.
+        if len(content) < self.page_size:
+            return None
+
+        # Legacy fallback ONLY when `last` is absent: stop on the last page by
+        # index. Never compare when totalPages is None (would TypeError).
+        if page_data.get('last') is None:
+            number = page_data.get('number')
+            total_pages = page_data.get('totalPages')
+            if number is not None and total_pages is not None and number >= total_pages - 1:
+                return None
+
+        return previous_token + 1
 
     def get_starting_time(self, context):
         start_date = self.config.get("start_date")
