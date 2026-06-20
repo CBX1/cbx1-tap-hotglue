@@ -510,9 +510,22 @@ def test_e2e_contract_full_final_page_with_last_true(monkeypatch):
 # AccountStream: narrow the exception catch (Mycroft #2)
 # =====================================================================================
 
+def _account_instance(state=None):
+    """A real AccountStream instance whose stream_state is backed by tap_state.
+
+    (stream_state is a read-only property, so it cannot be set as an attribute.)
+    """
+    from tap_cbx1.streams import AccountStream
+
+    inst = object.__new__(AccountStream)
+    inst.name = "accounts"
+    inst._tap_state = {"bookmarks": {"accounts": dict(state or {})}}
+    return inst
+
+
 def _account_super_raises(monkeypatch, exc):
-    """Patch the parent CBX1Stream.request_records to raise `exc`, so AccountStream's
-    `yield from super().request_records(...)` triggers its except handler."""
+    """Patch the parent CBX1Stream.request_records to raise `exc` immediately (before
+    any progress), so AccountStream's `yield from super()...` triggers its handler."""
     import tap_cbx1.client as client_mod
 
     def raising(self, context):
@@ -522,36 +535,107 @@ def _account_super_raises(monkeypatch, exc):
     monkeypatch.setattr(client_mod.CBX1Stream, "request_records", raising)
 
 
-def test_account_stream_swallows_fatal_api_error(monkeypatch):
-    """A missing ACCOUNT mapping surfaces as a 4xx -> FatalAPIError -> swallowed
-    (yield nothing) rather than failing the run."""
+def test_account_stream_swallows_fatal_on_fresh_first_page(monkeypatch):
+    """A missing ACCOUNT mapping fails the FIRST fetch with a 4xx (FatalAPIError)
+    before any progress -> swallowed (yield nothing) rather than failing the run."""
     from singer_sdk.exceptions import FatalAPIError
     from tap_cbx1.streams import AccountStream
 
     _account_super_raises(monkeypatch, FatalAPIError("400 Client Error: mapping not found"))
-    inst = object.__new__(AccountStream)
-    out = list(AccountStream.request_records(inst, context=None))
+    out = list(AccountStream.request_records(_account_instance({}), context=None))
     assert out == []
 
 
 def test_account_stream_propagates_retriable_error(monkeypatch):
-    """A transient failure (5xx/timeout -> RetriableAPIError) must NOT be swallowed —
-    swallowing it would record false success and drop records."""
+    """A transient failure (5xx/timeout -> RetriableAPIError) must NOT be swallowed."""
     from singer_sdk.exceptions import RetriableAPIError
     from tap_cbx1.streams import AccountStream
 
     _account_super_raises(monkeypatch, RetriableAPIError("503 Service Unavailable"))
-    inst = object.__new__(AccountStream)
     with pytest.raises(RetriableAPIError):
-        list(AccountStream.request_records(inst, context=None))
+        list(AccountStream.request_records(_account_instance({}), context=None))
 
 
 def test_account_stream_propagates_keyset_anomaly(monkeypatch):
-    """The incompatible-backend RuntimeError guard must also propagate through the
-    account stream (no silent swallow)."""
+    """The incompatible-backend RuntimeError guard must also propagate (no swallow)."""
     from tap_cbx1.streams import AccountStream
 
     _account_super_raises(monkeypatch, RuntimeError("full page, no cursor, not last"))
-    inst = object.__new__(AccountStream)
     with pytest.raises(RuntimeError):
+        list(AccountStream.request_records(_account_instance({}), context=None))
+
+
+def _account_run_instance(transport, *, state=None, start_date=None):
+    """A real AccountStream instance wired to drive the REAL parent request_records
+    over `transport`, so cursor persistence actually happens. stream_state is backed
+    by tap_state and page_size by config (both are read-only properties)."""
+    from tap_cbx1.streams import AccountStream
+
+    inst = object.__new__(AccountStream)
+    inst.name = "accounts"
+    inst._tap_state = {"bookmarks": {"accounts": dict(state or {})}}
+    inst._config = {"page_size": PAGE_SIZE}
+    inst.get_starting_time = lambda ctx: start_date
+    inst.prepare_request = lambda context, next_page_token: f"req-{next_page_token}"
+    inst.request_decorator = lambda fn: fn
+    inst._request = transport
+    inst._write_state_message = lambda: None
+    return inst
+
+
+def test_account_stream_propagates_fatal_after_progress_no_wedge(monkeypatch):
+    """Regression (the persisted-cursor wedge): page 1 succeeds (cursor persisted),
+    then page 2 raises FatalAPIError. The error MUST propagate, not be swallowed —
+    otherwise the persisted cursor would make every later run resume to the same
+    failing page, swallow again, and never advance or clear (permanent wedge)."""
+    from singer_sdk.exceptions import FatalAPIError
+    from tap_cbx1.streams import AccountStream
+
+    monkeypatch.delenv("HOTGLUE_PRINCIPAL_ID", raising=False)
+    calls = {"n": 0}
+    p0 = [_rec("other", f"p0-{i}") for i in range(PAGE_SIZE)]
+
+    def transport(*_a, **_k):
+        i = calls["n"]
+        calls["n"] += 1
+        if i == 0:
+            resp = MagicMock()
+            resp.json.return_value = {"data": {"content": p0, "cursor": "c1", "last": False, "size": PAGE_SIZE}}
+            return resp
+        raise FatalAPIError("413 Client Error mid-window")
+
+    inst = _account_run_instance(transport, state={})
+    out = []
+    with pytest.raises(FatalAPIError):
+        for r in AccountStream.request_records(inst, context=None):
+            out.append(r)
+
+    assert [r["id"] for r in out] == [f"p0-{i}" for i in range(PAGE_SIZE)]
+    # Progress was persisted and the mid-window 4xx propagated (loud), not swallowed.
+    assert inst.stream_state["cursor"] == "c1"
+
+
+def test_account_stream_swallows_fatal_only_before_progress_with_all_filtered_page(monkeypatch):
+    """Edge of the guard: page 1 is a FULL page of all-HotGlue records (yields
+    nothing) so a cursor IS persisted, then page 2 raises FatalAPIError. Even though
+    nothing was yielded, the persisted cursor means progress was made -> propagate."""
+    from singer_sdk.exceptions import FatalAPIError
+    from tap_cbx1.streams import AccountStream
+
+    monkeypatch.setenv("HOTGLUE_PRINCIPAL_ID", HOTGLUE_UUID)
+    calls = {"n": 0}
+    all_hotglue = _full_page(HOTGLUE_UUID, "p0")
+
+    def transport(*_a, **_k):
+        i = calls["n"]
+        calls["n"] += 1
+        if i == 0:
+            resp = MagicMock()
+            resp.json.return_value = {"data": {"content": all_hotglue, "cursor": "c1", "last": False, "size": PAGE_SIZE}}
+            return resp
+        raise FatalAPIError("400 Client Error mid-window")
+
+    inst = _account_run_instance(transport, state={})
+    with pytest.raises(FatalAPIError):
         list(AccountStream.request_records(inst, context=None))
+    assert inst.stream_state["cursor"] == "c1"

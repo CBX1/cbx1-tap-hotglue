@@ -23,8 +23,8 @@ _TToken = TypeVar("_TToken")
 # Extra Singer-state bookmark fields (alongside the SDK's replication_key_value).
 # Persisting these makes intra-run keyset progress durable: a run that ends partway
 # leaves a resume point so the next run reads strictly the unread remainder.
-_CURSOR_STATE_KEY = "cursor"
-_WINDOW_END_STATE_KEY = "window_end"
+CURSOR_STATE_KEY = "cursor"
+WINDOW_END_STATE_KEY = "window_end"
 _ISO_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 
 
@@ -75,13 +75,13 @@ class CBX1Stream(RESTStream):
         """
         if getattr(self, "_resume_cache", None) is None:
             state = self.stream_state
-            saved_cursor = state.get(_CURSOR_STATE_KEY)
-            saved_window_end = state.get(_WINDOW_END_STATE_KEY)
+            saved_cursor = state.get(CURSOR_STATE_KEY)
+            saved_window_end = state.get(WINDOW_END_STATE_KEY)
             if saved_cursor and saved_window_end:
                 self._resume_cache = (saved_cursor, parse(saved_window_end))
             else:
-                state.pop(_CURSOR_STATE_KEY, None)
-                state.pop(_WINDOW_END_STATE_KEY, None)
+                state.pop(CURSOR_STATE_KEY, None)
+                state.pop(WINDOW_END_STATE_KEY, None)
                 self._resume_cache = ("", parse("now"))
         return self._resume_cache
 
@@ -276,15 +276,15 @@ class CBX1Stream(RESTStream):
                 # upper bound and clear the intra-run cursor.
                 state["replication_key"] = replication_key
                 state["replication_key_value"] = window_end_iso
-                state.pop(_CURSOR_STATE_KEY, None)
-                state.pop(_WINDOW_END_STATE_KEY, None)
+                state.pop(CURSOR_STATE_KEY, None)
+                state.pop(WINDOW_END_STATE_KEY, None)
                 self._write_state_message()
                 finished = True
             else:
                 # Persist the resume point (cursor + pinned window) WITHOUT advancing
                 # the run-to-run watermark.
-                state[_CURSOR_STATE_KEY] = next_token
-                state[_WINDOW_END_STATE_KEY] = window_end_iso
+                state[CURSOR_STATE_KEY] = next_token
+                state[WINDOW_END_STATE_KEY] = window_end_iso
                 self._write_state_message()
                 token = next_token
 
