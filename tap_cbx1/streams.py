@@ -2,8 +2,9 @@ import logging
 from typing import Iterable
 
 from singer_sdk import typing as th
+from singer_sdk.exceptions import FatalAPIError
 
-from tap_cbx1.client import CBX1Stream
+from tap_cbx1.client import CBX1Stream, CURSOR_STATE_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -49,12 +50,27 @@ class AccountStream(CBX1Stream):
             return _ACCOUNT_FALLBACK_SCHEMA
 
     def request_records(self, context) -> Iterable[dict]:
+        yielded_any = False
         try:
-            yield from super().request_records(context)
-        except Exception as e:
+            for record in super().request_records(context):
+                yielded_any = True
+                yield record
+        except FatalAPIError as e:
+            # Treat a 4xx as "no ACCOUNT egestion mapping for this tenant" and yield
+            # nothing ONLY when it happens before any progress: the very first fetch
+            # of a fresh window, with no records yielded AND no resume cursor
+            # persisted. A 4xx AFTER progress is a real error — swallowing it would
+            # leave the persisted (cursor, window_end) in state, so every later run
+            # would resume to the same failing page, swallow again, and never advance
+            # or clear: a permanent silent wedge. Fail loudly in that case. Transient
+            # errors (5xx/timeouts -> RetriableAPIError) and the keyset-anomaly
+            # RuntimeError are not caught here and always propagate.
+            if yielded_any or self.stream_state.get(CURSOR_STATE_KEY):
+                raise
             logger.warning(
-                "Could not fetch account records for this tenant "
-                "(likely no ACCOUNT egestion mapping configured): %s",
+                "ACCOUNT egestion list returned a client error on the first page "
+                "for this tenant (likely no ACCOUNT egestion mapping configured); "
+                "yielding no records: %s",
                 e,
             )
 
