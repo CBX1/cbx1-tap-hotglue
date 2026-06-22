@@ -13,7 +13,7 @@ from tap_cbx1.schema_utils import fetch_schema_from_api
 from datetime import timedelta
 from tap_cbx1.constants import (
     CRM_KEY,
-    HOTGLUE_PRINCIPAL_ID_ENV,
+    HOTGLUE_PRINCIPAL_ID,
     PAGE_SIZE_KEY,
     DEFAULT_PAGE_SIZE,
 )
@@ -250,7 +250,7 @@ class CBX1Stream(RESTStream):
         finished = False
         # Tap-side filter: drop records HotGlue itself last-modified to avoid re-ingesting our own
         # writes. Pushed-down `$ne updatedBy` regresses Mongo on tenants where HotGlue dominates.
-        hotglue_principal_id = os.getenv(HOTGLUE_PRINCIPAL_ID_ENV)
+        hotglue_principal_id = os.getenv(HOTGLUE_PRINCIPAL_ID)
         skipped = 0
 
         while not finished:

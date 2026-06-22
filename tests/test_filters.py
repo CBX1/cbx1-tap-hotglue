@@ -143,10 +143,10 @@ def test_payload_pins_window_end_from_saved_state(monkeypatch):
 
 def test_page_size_default_override_and_invalid():
     CBX1Stream = _cbx1()
-    assert CBX1Stream.page_size.fget(SimpleNamespace(config={})) == 500
+    assert CBX1Stream.page_size.fget(SimpleNamespace(config={})) == 100
     assert CBX1Stream.page_size.fget(SimpleNamespace(config={"page_size": 250})) == 250
     # An invalid value falls back to the default rather than crashing the run.
-    assert CBX1Stream.page_size.fget(SimpleNamespace(config={"page_size": "nope"})) == 500
+    assert CBX1Stream.page_size.fget(SimpleNamespace(config={"page_size": "nope"})) == 100
 
 
 # =====================================================================================
