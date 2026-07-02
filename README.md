@@ -49,7 +49,7 @@ CLI entry point (pyproject): `tap-cbx1 = 'tap_cbx1.tap:TapCBX1.cli'`.
 }
 ```
 
-- `Code` + `OrgId` (required): access-key credentials for CBX1 IDM. The auth flow GETs `{BASE_URL}api/g/v1/auth/tokens` with `authenticationType=ACCESS_KEY` and receives a `sessionToken` (JWT, `maxAge` default 30 days). The token and `expires_in` are **written back into the config file** (`AccessToken` key) — this is why local `config.json` files grow extra keys after a run; never commit those.
+- `Code` + `OrgId` (required): access-key credentials for CBX1 IDM, from the tenant's Descope access key setup (ask in #eng-crm-self-serve for QA-tenant credentials). The auth flow GETs `{BASE_URL}api/g/v1/auth/tokens` with `authenticationType=ACCESS_KEY` and receives a `sessionToken` (JWT, `maxAge` default 30 days). The token and `expires_in` are **written back into the config file** (`AccessToken` key) — this is why local `config.json` files grow extra keys after a run; never commit those.
 - `CRMSystem` (required at runtime): interpolated into both the list endpoint and the schema endpoint paths.
 - `page_size` (optional, default 100): keyset pagination page size. Larger is cheap (no skip cost); HotGlue prod configs use 500.
 - `start_date` (optional): initial lower bound for the replication window when no state exists.
@@ -85,7 +85,26 @@ Copy `.env.example` to `.env` for local runs.
 
 ## Running locally
 
-See [Quickstart](#quickstart). Incremental runs: pass `--state state.json` (Singer state from a prior run). Local `catalog.json` / `output.singer` artifacts are gitignored (they can contain tenant data); an `output.singer` from a QA-tenant run makes a good local fixture for the `cbx1-target-hotglue` repo.
+See [Quickstart](#quickstart) for the discover → sync commands. Operational notes:
+
+- **Logs go to stderr, Singer messages to stdout** — always redirect stdout to a file.
+- **Incremental runs:** pass `--state state.json`. To capture next-run state, take the **last** STATE line from the previous output:
+  ```bash
+  grep '"type": "STATE"' output.singer | tail -1 | python3 -c 'import sys,json; print(json.dumps(json.load(sys.stdin)["value"]))' > state.json
+  ```
+- **Stream selection:** edit `catalog.json` metadata (`"selected": false`) to skip a stream.
+- **Reading the output:** see [`docs/singer-format.md`](docs/singer-format.md) for the SCHEMA/RECORD/STATE primer and this tap's state semantics. Quick checks:
+  ```bash
+  grep -c '"type": "RECORD"' output.singer                      # record count
+  grep '"type": "STATE"' output.singer | tail -1                # final state
+  ```
+- **End-to-end check with the target:**
+  ```bash
+  cat output.singer | (cd ../cbx1-target-hotglue && poetry run target-cbx1 --config config.json)
+  ```
+  Requires a QA-tenant config in the target repo — see that repo's README.
+
+Local `catalog.json` / `output.singer` / `state.json` artifacts are gitignored (they can contain tenant data); an `output.singer` from a QA-tenant run makes a good local fixture for the `cbx1-target-hotglue` repo.
 
 ## Tests
 
@@ -108,6 +127,12 @@ The suite covers: payload uses cursor not pageNumber, page_size defaulting, `tes
 | Same records re-read every run | Window never completes (run always dies partway) — cursor persists but watermark never advances. Look for the failure that ends each run. |
 | Our own writes echoing back into the pipeline | `HOTGLUE_PRINCIPAL_ID` unset or wrong UUID for the env. The skip count is logged at run end: `Skipped N records last-modified by HotGlue principal`. |
 | CM100 / backend CPU spikes during sync | Something is sending page-number/skip pagination. This tap must always send `cursor`. |
+
+When records go missing or duplicate, verify the three state-health invariants (full state semantics in [`docs/singer-format.md`](docs/singer-format.md)):
+
+1. A clean run's final STATE has `replication_key_value` = the window upper bound and **no** `cursor`/`window_end` keys.
+2. A mid-run STATE carrying `cursor` + `window_end` is a resume point — normal during a run, a wedge if it persists across runs.
+3. Payloads must send `cursor`, never `pageNumber` (the tests enforce this; or log the payload from `prepare_request_payload`).
 
 ## Conventions
 
