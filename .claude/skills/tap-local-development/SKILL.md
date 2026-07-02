@@ -5,7 +5,7 @@ description: Run, test, and debug tap-cbx1 locally — discover/sync workflow, c
 
 # tap-cbx1 Local Development
 
-Authoritative reference: `AGENTS.md` at the repo root (config keys, env vars, pagination/state design, debugging playbook). This skill is the operational workflow.
+Authoritative reference: `README.md` at the repo root (config keys, env vars, pagination/state design, debugging playbook). This skill is the operational workflow.
 
 ## Setup (once)
 
@@ -14,7 +14,7 @@ poetry install
 cp .env.example .env    # fill in BASE_URL (+ optional HOTGLUE_PRINCIPAL_ID)
 ```
 
-Create `config.json` with the real keys — `Code`, `OrgId`, `CRMSystem`, optional `page_size`/`start_date` (exact shape in `AGENTS.md` → Config). Get `Code`/`OrgId` from the tenant's Descope access key setup (ask in #eng-crm-self-serve if unsure). Never commit `config.json` — a run writes the JWT session token back into it (it is gitignored).
+Create `config.json` with the real keys — `Code`, `OrgId`, `CRMSystem`, optional `page_size`/`start_date` (exact shape in `README.md` → Config). Get `Code`/`OrgId` from the tenant's Descope access key setup (ask in #eng-crm-self-serve if unsure). Never commit `config.json` — a run writes the JWT session token back into it (it is gitignored).
 
 ## Run
 
@@ -48,7 +48,7 @@ poetry run pytest
 
 ## Debug
 
-Work the symptom table in `AGENTS.md` → "Debugging playbook" first. Key invariants to check when records are missing or duplicated:
+Work the symptom table in `README.md` → "Debugging playbook" first. Key invariants to check when records are missing or duplicated:
 
 1. Final STATE must have `replication_key_value` = the window upper bound, and **no** `cursor`/`window_end` keys (clean completion).
 2. A mid-run STATE with `cursor` + `window_end` is a resume point — normal during a run, a wedge if it persists across runs.
@@ -60,4 +60,4 @@ Work the symptom table in `AGENTS.md` → "Debugging playbook" first. Key invari
 cat output.singer | (cd ../cbx1-target-hotglue && poetry run target-cbx1 --config config.json)
 ```
 
-Requires a QA-tenant config in the target repo — see that repo's `AGENTS.md`.
+Requires a QA-tenant config in the target repo — see that repo's `README.md`.

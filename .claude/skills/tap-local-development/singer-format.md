@@ -30,7 +30,7 @@ A checkpoint the runner (HotGlue) persists and passes back on the next run via `
 
 ### tap-cbx1 state semantics
 
-This tap manages state manually (see `AGENTS.md` → Pagination & state). Per stream bookmark:
+This tap manages state manually (see `README.md` → Pagination & state). Per stream bookmark:
 
 | Key | Meaning |
 |---|---|

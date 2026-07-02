@@ -1,108 +1,11 @@
-# tap-cbx1 — Agent Guide
+# Agent Guide — tap-cbx1
 
-Singer **tap** (source connector) that extracts CRM data from the CBX1 platform's Java backend API. Built on the Meltano Singer SDK. It is the read side of the HotGlue CBX1 ↔ CRM sync:
+**`README.md` is the authoritative documentation** for this repo: layout, config, env vars, API surface, pagination/state design, tests, and the debugging playbook. Read it first; don't duplicate its content here.
 
-```
-tap-cbx1  →  hotglue-transformation-scripts (etl.py)  →  CRM target (Salesforce/HubSpot/…)
-CRM tap   →  hotglue-transformation-scripts (etl.py)  →  cbx1-target-hotglue
-```
+Agent-specific ground rules:
 
-End-to-end pipeline documentation lives in the `hotglue-transformation-scripts` repo (`docs/architecture.md`).
-
-## Layout
-
-| Path | Role |
-|---|---|
-| `tap_cbx1/tap.py` | `TapCBX1` — tap entry point, config schema, stream registry |
-| `tap_cbx1/streams.py` | `ContactStream`, `AccountStream` (AccountStream degrades gracefully for tenants without an ACCOUNT egestion mapping) |
-| `tap_cbx1/client.py` | `CBX1Stream` base class — keyset pagination, pinned windows, durable resume state. **Read the docstrings here before touching pagination/state.** |
-| `tap_cbx1/auth.py` | `TapCBX1Auth` — access-key → JWT session token against CBX1 IDM |
-| `tap_cbx1/schema_utils.py` | Dynamic schema discovery: CBX1 `flattenedJsonSchemaForJsonPath` → Singer schema |
-| `tap_cbx1/constants.py` | Config key names, `DEFAULT_PAGE_SIZE` |
-| `tests/test_filters.py` | pytest suite: request payload construction, cursor pagination, `updatedBy` filtering, state windowing |
-
-CLI entry point (pyproject): `tap-cbx1 = 'tap_cbx1.tap:TapCBX1.cli'`.
-
-## Config (`config.json`)
-
-```json
-{
-    "Code": "…",
-    "OrgId": "…",
-    "CRMSystem": "SALESFORCE",
-    "page_size": 500,
-    "start_date": "2024-01-01T00:00:00.000Z"
-}
-```
-
-- `Code` + `OrgId` (required): access-key credentials for CBX1 IDM. The auth flow GETs `{BASE_URL}api/g/v1/auth/tokens` with `authenticationType=ACCESS_KEY` and receives a `sessionToken` (JWT, `maxAge` default 30 days). The token and `expires_in` are **written back into the config file** (`AccessToken` key) — this is why local `config.json` files grow extra keys after a run; never commit those.
-- `CRMSystem` (required at runtime): interpolated into both the list endpoint and the schema endpoint paths.
-- `page_size` (optional, default 100): keyset pagination page size. Larger is cheap (no skip cost); HotGlue prod configs use 500.
-- `start_date` (optional): initial lower bound for the replication window when no state exists.
-
-## Environment variables
-
-| Variable | Required | Purpose |
-|---|---|---|
-| `BASE_URL` | yes | CBX1 Java backend base URL, **with trailing slash** (code does `BASE_URL + "api/…"`). e.g. `http://java-backend.api.qa.cbx1.internal/` |
-| `HOTGLUE_PRINCIPAL_ID` | no | UUID of HotGlue's CBX1 SERVICE_ACCOUNT for the deployment env. When set, records whose `updatedBy` equals this UUID are dropped **tap-side after fetch**, to avoid re-ingesting our own writes. Deliberately not pushed down as `$ne updatedBy` — that regresses Mongo on tenants where HotGlue is the dominant writer (verified via prod `explain()`). |
-
-Copy `.env.example` to `.env` for local runs.
-
-## API surface used
-
-- Auth: `GET {BASE_URL}api/g/v1/auth/tokens?authenticationType=ACCESS_KEY&code=…&orgId=…`
-- List (sync): `POST {BASE_URL}api/t/v1/targets/integrations/{TARGET}/{CRMSystem}/list?deanonymizePIIData=true` where `TARGET` ∈ `CONTACT`, `ACCOUNT`
-- Schema (discover): `GET {BASE_URL}api/t/v1/targets/integrations/{target_name}/{CRMSystem}/jsonSchema`
-
-## Pagination & state — the load-bearing design
-
-**Keyset (cursor) pagination, never page-number/skip.** The backend returns an opaque `(updatedAt, id)` cursor; every page costs the same regardless of depth. Skip-based paging pins the prod Mongo primary at depth (CM100 timeouts). Payloads send `cursor` (empty string on the first page) — never `pageNumber`.
-
-**Pinned windows.** Each run reads a window `(bookmark, window_end]` sorted `updatedAt DESC`, where `window_end` is pinned at the run's start (`now()`), and **reused on resume** — recomputing it would let new arrivals slip in at the top of a DESC scan and be skipped.
-
-**Durable intra-run resume.** After each page's records are emitted, `(cursor, window_end)` is persisted to Singer state. A run that dies partway resumes from that cursor against the same window. On clean window completion the run-to-run watermark (`replication_key_value`) advances to the pinned upper bound and the cursor is cleared.
-
-**Manual watermark.** The SDK's record-driven high-watermark is disabled (`_increment_stream_state` returns None) because it assumes ASC ordering; with DESC it would commit the newest `updatedAt` on a partial run and silently skip the unread tail.
-
-**Fail-loud invariant.** A full page with no cursor and `last != true` raises `RuntimeError` instead of terminating: terminating would record false progress and drop the unread remainder (signature of a non-keyset backend build during a rolling deploy).
-
-**AccountStream graceful degradation.** Tenants without an ACCOUNT egestion mapping: discovery falls back to a minimal schema; a 4xx on the *first* page with no prior progress yields zero records instead of failing. A 4xx *after* progress propagates (otherwise the persisted cursor would wedge every subsequent run).
-
-## Running locally
-
-```bash
-poetry install
-poetry run tap-cbx1 --config config.json --discover > catalog.json
-poetry run tap-cbx1 --config config.json --catalog catalog.json > output.singer
-```
-
-Incremental runs: pass `--state state.json` (Singer state from a prior run). Local `catalog.json` / `output.singer` artifacts are gitignored (they can contain tenant data); an `output.singer` from a QA-tenant run makes a good local fixture for the `cbx1-target-hotglue` repo.
-
-## Tests
-
-```bash
-poetry run pytest            # all
-poetry run pytest tests/test_filters.py -k cursor   # focused
-```
-
-The suite covers: payload uses cursor not pageNumber, page_size defaulting, `testMetadata` filter always present, BETWEEN window construction, `HOTGLUE_PRINCIPAL_ID` skip behavior, resume-state handling.
-
-## Debugging playbook
-
-| Symptom | Likely cause / where to look |
-|---|---|
-| `Failed OAuth login` RuntimeError at startup | Bad `Code`/`OrgId`, or `BASE_URL` missing/lacking trailing slash. Check `auth.py::update_access_token`; the response body is included in the error. |
-| `TypeError: unsupported operand … NoneType` mentioning `BASE_URL` | `BASE_URL` env var not set (both `auth.py` and `client.py` do `os.getenv("BASE_URL") + …`). |
-| Discovery fails: `Failed to fetch schema for target …` | The tenant/CRM has no egestion mapping configured, or auth headers rejected. For ACCOUNT this degrades to a fallback schema; for CONTACT it raises. Check `schema_utils.fetch_schema_from_api` (expects status code `CM000` and `flattenedJsonSchemaForJsonPath` in `data[1]`). |
-| `RuntimeError: … full page … no keyset cursor` | Backend not on the keyset-cursor build (rolling deploy/rollback). Do not "fix" the tap — deploy the backend. |
-| Records missing between runs | Inspect the STATE messages in the output: is `replication_key_value` advancing past data that was never read? Check for a stale `cursor`/`window_end` pair in state. |
-| Same records re-read every run | Window never completes (run always dies partway) — cursor persists but watermark never advances. Look for the failure that ends each run. |
-| Our own writes echoing back into the pipeline | `HOTGLUE_PRINCIPAL_ID` unset or wrong UUID for the env. The skip count is logged at run end: `Skipped N records last-modified by HotGlue principal`. |
-| CM100 / backend CPU spikes during sync | Something is sending page-number/skip pagination. This tap must always send `cursor`. |
-
-## Conventions
-
-- Never widen the `$ne updatedBy` push-down or switch to skip pagination — both decisions are documented above and in code docstrings with prod evidence.
-- Datetime fields (`createdAt`, `updatedAt`, `dataUpdatedAt`) are forced to `DateTimeType` in schema conversion regardless of what the API schema says.
-- Nested field paths (`hqLocation.city`) are flattened with underscores (`hqLocation_city`); `[*]` array paths map to array-of-scalar types.
+- **Do not change the pagination or state model** (keyset cursor, pinned windows, manual watermark) without reading README → "Pagination & state" *and* the docstrings in `tap_cbx1/client.py`. Several "obvious simplifications" (skip paging, SDK auto-watermark, `$ne updatedBy` push-down) are deliberately rejected with prod evidence.
+- Never commit `config.json`, `.env`, `catalog.json`, `output.singer`, or `state.json` — a run writes the JWT session token back into `config.json`. All are gitignored.
+- Run `poetry run pytest` (35 tests, <1s, no network) before and after touching `client.py` or `streams.py` — the suite encodes the pagination/state contract.
+- Local run/debug workflow: `.claude/skills/tap-local-development/`.
+- End-to-end pipeline context: `docs/architecture.md` in `hotglue-transformation-scripts`.
