@@ -11,6 +11,8 @@ End-to-end pipeline documentation lives in the `hotglue-transformation-scripts` 
 
 ## Quickstart
 
+Requires **Python ≥3.7.1, <3.11** (`poetry install` fails on 3.11+; the pinned `singer-sdk 0.4.x` needs the older interpreter).
+
 ```bash
 poetry install
 cp .env.example .env        # fill in BASE_URL (+ optional HOTGLUE_PRINCIPAL_ID)
@@ -49,7 +51,7 @@ CLI entry point (pyproject): `tap-cbx1 = 'tap_cbx1.tap:TapCBX1.cli'`.
 }
 ```
 
-- `Code` + `OrgId` (required): access-key credentials for CBX1 IDM, from the tenant's Descope access key setup (ask in #eng-crm-self-serve for QA-tenant credentials). The auth flow GETs `{BASE_URL}api/g/v1/auth/tokens` with `authenticationType=ACCESS_KEY` and receives a `sessionToken` (JWT, `maxAge` default 30 days). The token and `expires_in` are **written back into the config file** (`AccessToken` key) — this is why local `config.json` files grow extra keys after a run; never commit those.
+- `Code` + `OrgId` (required): access-key credentials for CBX1 IDM, from the tenant's Descope access key setup (ask in #eng-crm-self-serve for QA-tenant credentials). The auth flow GETs `{BASE_URL}api/g/v1/auth/tokens` with `authenticationType=ACCESS_KEY` and receives a `sessionToken` (JWT, `maxAge` default 30 days). The token and `expires_in` are **written back into the config file** (`AccessToken` key) — write-only bookkeeping: nothing reads them back, and every fresh process re-authenticates (the token is only reused in-memory within one run). It's why local `config.json` files grow extra keys after a run; never commit those.
 - `CRMSystem` (required at runtime): interpolated into both the list endpoint and the schema endpoint paths.
 - `page_size` (optional, default 100): keyset pagination page size. Larger is cheap (no skip cost); HotGlue prod configs use 500.
 - `start_date` (optional): initial lower bound for the replication window when no state exists.
