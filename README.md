@@ -1,58 +1,63 @@
-# Tap for CBX1
+# tap-cbx1
 
+Singer tap that extracts CRM data (accounts, contacts) from the CBX1 platform API. Built with the [Meltano Singer SDK](https://sdk.meltano.com/). Runs inside HotGlue as the source side of the CBX1 ↔ CRM sync pipeline.
 
-## Required Config Fields
+> **Agents / detailed reference:** see [`AGENTS.md`](AGENTS.md) for architecture, pagination/state semantics, and debugging guidance.
 
-```
-{
-    "access_key": "...",
-    "organization_id": "...",
-    "user_id": "..."
-}
-```
+## Quickstart
 
-## Authentication
-
-This tap uses JWT authentication with CBX1's IDM. The tap will:
-
-1. Fetch a JWT token using the provided access_key and organization_id
-2. Use this JWT token for all API calls
-3. Monitor token expiration and automatically refresh when needed (typically ~30 days)
-
-## Environment Variables
-
-| Variable | Required | Purpose |
-|----------|----------|---------|
-| `BASE_URL` | yes | Base URL of the CBX1 API (e.g. `http://java-backend.api.qa.cbx1.internal/`) |
-| `HOTGLUE_PRINCIPAL_ID` | no | UUID of HotGlue's CBX1 SERVICE_ACCOUNT for the deployment env. When set, the tap drops records whose `updatedBy` equals this UUID (filtered tap-side, after fetch) to avoid re-ingesting our own writes. Not tenant-specific. The filter is intentionally not pushed to the cbx1 server because `$ne updatedBy` regresses Mongo on tenants where HotGlue is the dominant writer (verified via prod `explain()`). |
-
-## Streams
-
-Current supported streams are:
-- Accounts
-- Contacts
-
-## Schemas
-
-The stream schemas are hardcoded in each individual stream class
-
-## Running this locally
-
-1. Install dependencies with Poetry:
-```
+```bash
 poetry install
 ```
 
-2. Create a config.json with the required fields
+Create a `config.json`:
 
-3. Run a discover to generate a catalog.json
+```json
+{
+    "Code": "<access key code from CBX1 IDM>",
+    "OrgId": "<tenant organization id>",
+    "CRMSystem": "<crm system, e.g. SALESFORCE or HUBSPOT>",
+    "page_size": 500,
+    "start_date": "2024-01-01T00:00:00.000Z"
+}
+```
 
-```
-tap-cbx1 --config <path to config> --discover > <desired location for catalog>
+| Field | Required | Purpose |
+|---|---|---|
+| `Code` | yes | Access-key code used against CBX1 IDM (`/api/g/v1/auth/tokens`) to obtain a JWT session token |
+| `OrgId` | yes | Tenant organization id the access key belongs to |
+| `CRMSystem` | yes (runtime) | CRM the egestion mapping is configured for; part of the list/schema endpoint paths |
+| `page_size` | no | Records per page for keyset pagination (default 100) |
+| `start_date` | no | Initial replication watermark when no state exists |
+
+Set environment variables (see `.env.example`):
+
+```bash
+export BASE_URL="http://java-backend.api.qa.cbx1.internal/"   # trailing slash required
+export HOTGLUE_PRINCIPAL_ID="<uuid>"                          # optional, see AGENTS.md
 ```
 
-4. Run a sync against the catalog.json
+Discover, then sync:
 
+```bash
+poetry run tap-cbx1 --config config.json --discover > catalog.json
+poetry run tap-cbx1 --config config.json --catalog catalog.json > output.singer
 ```
-tap-cbx1 --config <path to config> --catalog <path to catalog> > <path to data output>
+
+## Streams
+
+- `contacts` (`/CONTACT`)
+- `accounts` (`/ACCOUNT`) — degrades gracefully when a tenant has no ACCOUNT egestion mapping
+
+Schemas are discovered dynamically from the CBX1 `jsonSchema` endpoint per stream.
+
+## Tests
+
+```bash
+poetry run pytest
 ```
+
+## Related repos
+
+- [`cbx1-target-hotglue`](https://github.com/CBX1/cbx1-target-hotglue) — Singer target (write side)
+- [`hotglue-transformation-scripts`](https://github.com/CBX1/hotglue-transformation-scripts) — ETL between tap and target; contains the end-to-end architecture doc
