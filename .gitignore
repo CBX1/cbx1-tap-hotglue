@@ -7,3 +7,10 @@ __pycache__
 
 .idea
 .python-version
+
+# Local run artifacts — config.json gets the JWT session token written back into it
+.env
+config.json
+catalog.json
+output.singer
+state.json
