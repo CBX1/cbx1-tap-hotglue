@@ -14,3 +14,9 @@ config.json
 catalog.json
 output.singer
 state.json
+
+# Coverage artifacts
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
