@@ -16,6 +16,7 @@ singer-sdk = "^0.4.3"
 
 [tool.poetry.dev-dependencies]
 pytest = "^6.2.5"
+coverage = "^7.2.7"
 tox = "^3.24.4"
 flake8 = "^3.9.2"
 black = "^21.9b0"

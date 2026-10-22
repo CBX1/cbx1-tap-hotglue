@@ -1,0 +1,57 @@
+name: SonarQube Coverage
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sonar:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    # Self-hosted runner is required to reach sonarqube.internal.cbx1.app.
+    runs-on: [self-hosted, cbx1-gcp-runner]
+    name: Pytest coverage + SonarQube quality gate
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # Full history so Sonar can compute blame and new-code lines.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install poetry
+        uses: abatilo/actions-poetry@v2
+
+      - name: Setup a local virtual environment
+        run: |
+          poetry config virtualenvs.create true --local
+          poetry config virtualenvs.in-project true --local
+
+      - name: Install the project dependencies
+        run: poetry install
+
+      - name: Run tests under coverage
+        run: poetry run coverage run --source=tap_cbx1 -m pytest
+
+      - name: Generate coverage report
+        run: poetry run coverage xml
+
+      # qualitygate.wait makes this step fail when the gate fails (Sonar way:
+      # new-code coverage < 80%); without it the scan only uploads results.
+      - name: SonarQube scan + quality gate
+        uses: sonarsource/sonarqube-scan-action@master
+        with:
+          args: >
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=300
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
